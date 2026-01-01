@@ -116,13 +116,13 @@ class RasterTiler:
                     self.max_zoom = self._calculate_max_zoom(src)
                     print(f"Detected optimal Max Zoom for Raster: {self.max_zoom}")
 
-                 for z in range(self.min_zoom, self.max_zoom + 1):
+                for z in range(self.min_zoom, self.max_zoom + 1):
                     # For optimization, we should calculate bounds in 4326 to get tiles list
                     # Use transform_bounds to convert src bounds to EPSG:4326
                     if src.crs != "EPSG:4326":
-                         min_lon, min_lat, max_lon, max_lat = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
+                        min_lon, min_lat, max_lon, max_lat = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
                     else:
-                         min_lon, min_lat, max_lon, max_lat = src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top
+                        min_lon, min_lat, max_lon, max_lat = src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top
 
                     tiles = list(mercantile.tiles(min_lon, min_lat, max_lon, max_lat, [z]))
                     
