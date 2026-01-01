@@ -13,16 +13,17 @@ from rasterio.warp import calculate_default_transform, reproject, Resampling, tr
 from rasterio.transform import from_bounds
 from PIL import Image
 import numpy as np
+import math
 
 from app.core.config import settings
 from app.core.exceptions import TilingProcessError
 
 class VectorTiler:
-    def __init__(self, source_path: str, output_dir: Path, min_zoom=0, max_zoom=14): # Increased max zoom slightly
+    def __init__(self, source_path: str, output_dir: Path, min_zoom=0, max_zoom=None):
         self.source_path = source_path
         self.output_dir = output_dir
         self.min_zoom = min_zoom
-        self.max_zoom = max_zoom
+        self.max_zoom = max_zoom or 18 # Default ke 18 untuk vector jika tidak diatur
         self.gdf = None
         self.sindex = None
 
@@ -88,17 +89,33 @@ class VectorTiler:
         plt.close(fig)
 
 class RasterTiler:
-    def __init__(self, source_path: str, output_dir: Path, min_zoom=0, max_zoom=12):
+    def __init__(self, source_path: str, output_dir: Path, min_zoom=0, max_zoom=None):
         self.source_path = source_path
         self.output_dir = output_dir
         self.min_zoom = min_zoom
         self.max_zoom = max_zoom
         
+    def _calculate_max_zoom(self, src):
+        """Mendeteksi zoom optimal berdasarkan resolusi piksel (Ground Sampling Distance)."""
+        # Resolusi pada zoom 0 adalah ~156543 meter per piksel di equator
+        initial_resolution = 156543.03392
+        # Ambil pixel size (transform[0] adalah width of pixel)
+        res_x = abs(src.transform[0])
+        
+        if res_x <= 0: return 12
+        
+        # Formula: zoom = log2(initial_resolution / pixel_resolution)
+        detected_zoom = math.ceil(math.log2(initial_resolution / res_x))
+        # Jangan terlalu jauh (limit ke 20 agar tidak overload disk)
+        return min(max(detected_zoom, 0), 20)
+
     def generate(self):
         try:
             with rasterio.open(self.source_path) as src:
-                # Naive implementation for now, similar to previous one
-                # For production, consider using rio-cogeo or gdal2tiles approach
+                if self.max_zoom is None:
+                    self.max_zoom = self._calculate_max_zoom(src)
+                    print(f"Detected optimal Max Zoom for Raster: {self.max_zoom}")
+
                  for z in range(self.min_zoom, self.max_zoom + 1):
                     # For optimization, we should calculate bounds in 4326 to get tiles list
                     # Use transform_bounds to convert src bounds to EPSG:4326
