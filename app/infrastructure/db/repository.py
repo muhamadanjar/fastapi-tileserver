@@ -1,0 +1,78 @@
+from datetime import datetime
+from typing import Optional
+
+from sqlmodel import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import Session
+
+from app.domain.models import UploadSession, JobStatus
+from app.core.exceptions import SessionNotFoundError
+
+
+class UploadSessionRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, upload_session: UploadSession) -> UploadSession:
+        self.session.add(upload_session)
+        await self.session.commit()
+        await self.session.refresh(upload_session)
+        return upload_session
+
+    async def get_by_id(self, upload_id: str) -> Optional[UploadSession]:
+        result = await self.session.exec(
+            select(UploadSession).where(UploadSession.id == upload_id)
+        )
+        return result.first()
+
+    async def update_received_bytes(self, upload_id: str, received_bytes: int) -> None:
+        session_obj = await self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.received_bytes = received_bytes
+            session_obj.updated_at = datetime.utcnow()
+            self.session.add(session_obj)
+            await self.session.commit()
+
+    async def mark_complete(self, upload_id: str, final_path: str) -> None:
+        session_obj = await self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.final_path = final_path
+            session_obj.status = JobStatus.pending
+            session_obj.updated_at = datetime.utcnow()
+            self.session.add(session_obj)
+            await self.session.commit()
+
+    async def set_status(
+        self, upload_id: str, status: JobStatus, error_message: Optional[str] = None
+    ) -> None:
+        session_obj = await self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.status = status
+            session_obj.error_message = error_message
+            session_obj.updated_at = datetime.utcnow()
+            self.session.add(session_obj)
+            await self.session.commit()
+
+
+class SyncUploadSessionRepository:
+    """Synchronous variant used by the worker process."""
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_by_id(self, upload_id: str) -> Optional[UploadSession]:
+        result = self.session.exec(
+            select(UploadSession).where(UploadSession.id == upload_id)
+        )
+        return result.first()
+
+    def set_status(
+        self, upload_id: str, status: JobStatus, error_message: Optional[str] = None
+    ) -> None:
+        session_obj = self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.status = status
+            session_obj.error_message = error_message
+            session_obj.updated_at = datetime.utcnow()
+            self.session.add(session_obj)
+            self.session.commit()

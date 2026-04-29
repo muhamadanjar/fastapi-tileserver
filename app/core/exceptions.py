@@ -16,3 +16,21 @@ class FileSaveError(TileServerException):
     def __init__(self, detail: str):
         self.message = f"Failed to save file: {detail}"
         super().__init__(self.message)
+
+
+class SessionNotFoundError(TileServerException):
+    def __init__(self, upload_id: str):
+        self.message = f"Upload session '{upload_id}' not found."
+        super().__init__(self.message)
+
+
+class SessionAlreadyCompleteError(TileServerException):
+    def __init__(self, upload_id: str):
+        self.message = f"Upload session '{upload_id}' is already complete."
+        super().__init__(self.message)
+
+
+class ChunkUploadError(TileServerException):
+    def __init__(self, detail: str):
+        self.message = f"Chunk upload error: {detail}"
+        super().__init__(self.message)
