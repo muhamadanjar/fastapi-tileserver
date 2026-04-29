@@ -6,23 +6,33 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A tile service that converts geospatial sources (vector `.shp`/GeoJSON/GPKG/KML and raster GeoTIFF/IMG) into Web Mercator PNG image tiles. Supports both small direct uploads and large resumable chunked uploads. Background tiling runs via RabbitMQ.
 
+## Prerequisites
+
+- Python 3.11+ (project uses 3.11.15)
+- Docker (for RabbitMQ)
+
 ## Commands
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Copy and configure environment
+# Copy and configure environment (.env.example has RABBITMQ_URL, CHUNK_UPLOAD_THRESHOLD, DB_* vars)
 cp .env.example .env
+# Edit .env with your configuration if needed
 
 # Run FastAPI dev server
 uvicorn app.main:app --reload
+# API docs: http://localhost:8000/docs (Swagger UI)
+# Alternative docs: http://localhost:8000/redoc (ReDoc)
+# Health check: http://localhost:8000/
 
-# Run tiling worker (separate terminal, requires RabbitMQ)
+# Run tiling worker (separate terminal, requires RabbitMQ running)
 python -m app.workers.tiling_worker
 
 # Run RabbitMQ (Docker)
 docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
+# Management console: http://localhost:15672 (guest/guest)
 ```
 
 No test suite or linter is configured.
@@ -103,4 +113,24 @@ data/
 |---|---|---|
 | `RABBITMQ_URL` | `amqp://guest:guest@localhost:5672/` | RabbitMQ connection |
 | `CHUNK_UPLOAD_THRESHOLD` | `10485760` | Byte limit for direct upload (10 MB) |
+| `BACKEND_CORS_ORIGINS` | (empty) | Comma-separated CORS origins (e.g., `http://localhost:3000`) |
 | `DB_USER/PASS/HOST/PORT/NAME` | postgres defaults | PostGIS (future use) |
+
+## Verification & Troubleshooting
+
+**Verify services are running:**
+```bash
+# FastAPI dev server
+curl http://localhost:8000/
+
+# RabbitMQ connectivity
+docker ps | grep rabbitmq  # or check http://localhost:15672
+
+# Worker logs should show connection to RabbitMQ
+# If no "Connected to RabbitMQ" message, check RABBITMQ_URL in .env
+```
+
+**Common issues:**
+- `ConnectionError` connecting to RabbitMQ: Ensure RabbitMQ Docker container is running (`docker start rabbitmq`)
+- Database locked errors: Only run one worker instance at a time; SQLite doesn't support concurrent writes well
+- File permissions: Ensure `data/` directory is writable (`chmod -R 755 data/`)
