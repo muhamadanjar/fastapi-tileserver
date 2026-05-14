@@ -6,17 +6,12 @@ from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 from app.api.v1.api import api_router
 from app.infrastructure.db.connection import create_db_and_tables
-from app.infrastructure.broker.publisher import RabbitMQPublisher
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await create_db_and_tables()
-    publisher = RabbitMQPublisher()
-    await publisher.connect()
-    app.state.publisher = publisher
     yield
-    await publisher.close()
 
 
 app = FastAPI(

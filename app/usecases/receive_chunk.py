@@ -5,16 +5,15 @@ from app.core.config import settings
 from app.core.exceptions import ChunkUploadError, SessionAlreadyCompleteError, SessionNotFoundError
 from app.domain.models import JobStatus
 from app.domain.schemas import ChunkUploadResponse
-from app.infrastructure.broker.publisher import RabbitMQPublisher
 from app.infrastructure.db.repository import UploadSessionRepository
 from app.infrastructure.services.file_service import FileService
 from app.infrastructure.storage.chunk_storage import ChunkStorage
+from app.workers.tasks import process_tiling_task
 
 
 class ReceiveChunkUseCase:
-    def __init__(self, repo: UploadSessionRepository, publisher: RabbitMQPublisher):
+    def __init__(self, repo: UploadSessionRepository):
         self.repo = repo
-        self.publisher = publisher
 
     async def execute(
         self,
@@ -61,7 +60,7 @@ class ReceiveChunkUseCase:
                 raise ChunkUploadError(f"Assembly failed: {exc}") from exc
 
             await self.repo.mark_complete(upload_id, str(source_path))
-            await self.publisher.publish_tiling_job(
+            process_tiling_task.delay(
                 upload_id=upload_id,
                 layer_id=session.layer_id,
                 file_type=session.file_type,

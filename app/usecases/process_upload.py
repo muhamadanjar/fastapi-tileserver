@@ -4,20 +4,18 @@ from fastapi import UploadFile
 
 from app.domain.models import UploadSession, JobStatus
 from app.domain.schemas import TilingJobResponse
-from app.infrastructure.broker.publisher import RabbitMQPublisher
 from app.infrastructure.db.repository import UploadSessionRepository
 from app.infrastructure.services.file_service import FileService
+from app.workers.tasks import process_tiling_task
 
 
 class ProcessUploadUseCase:
     def __init__(
         self,
         file_service: FileService,
-        publisher: RabbitMQPublisher,
         repo: UploadSessionRepository,
     ):
         self.file_service = file_service
-        self.publisher = publisher
         self.repo = repo
 
     async def execute(self, file: UploadFile) -> TilingJobResponse:
@@ -37,7 +35,7 @@ class ProcessUploadUseCase:
         )
         await self.repo.create(session)
 
-        await self.publisher.publish_tiling_job(
+        process_tiling_task.delay(
             upload_id=upload_id,
             layer_id=layer_id,
             file_type=file_type,

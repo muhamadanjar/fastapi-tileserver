@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Purpose
 
-A tile service that converts geospatial sources (vector `.shp`/GeoJSON/GPKG/KML and raster GeoTIFF/IMG) into Web Mercator PNG image tiles. Supports both small direct uploads and large resumable chunked uploads. Background tiling runs via RabbitMQ.
+A tile service that converts geospatial sources (vector `.shp`/GeoJSON/GPKG/KML and raster GeoTIFF/IMG) into Web Mercator PNG image tiles. Supports both small direct uploads and large resumable chunked uploads. Background tiling runs via Celery worker (RabbitMQ broker).
 
 ## Prerequisites
 
@@ -27,8 +27,8 @@ uvicorn app.main:app --reload
 # Alternative docs: http://localhost:8000/redoc (ReDoc)
 # Health check: http://localhost:8000/
 
-# Run tiling worker (separate terminal, requires RabbitMQ running)
-python -m app.workers.tiling_worker
+# Run Celery tiling worker (separate terminal, requires RabbitMQ running)
+celery -A app.workers.celery_app worker --loglevel=info
 
 # Run RabbitMQ (Docker)
 docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
@@ -45,27 +45,27 @@ Clean Architecture layered structure:
   - `tiles.py` — `POST /upload-and-tile` direct upload (file < `CHUNK_UPLOAD_THRESHOLD`).
   - `upload.py` — Chunked upload: `POST /uploads/init`, `PATCH /uploads/{upload_id}`, `GET /uploads/{upload_id}/status`.
 - **`app/usecases/`** — Orchestration.
-  - `ProcessUploadUseCase` — saves file, persists `UploadSession`, publishes RabbitMQ job.
+  - `ProcessUploadUseCase` — saves file, persists `UploadSession`, queues Celery tiling task.
   - `InitChunkedUploadUseCase` — creates upload session + chunk directory.
-  - `ReceiveChunkUseCase` — stores chunk part, assembles on last chunk, publishes RabbitMQ job.
+  - `ReceiveChunkUseCase` — stores chunk part, assembles on last chunk, queues Celery tiling task.
 - **`app/infrastructure/`** — Side effects:
   - `services/file_service.py` — `FileService`: save uploads, validate formats, extract ZIPs, `prepare_source_path()` reused by both flows.
   - `services/tiling_service.py` — `TilingService.process_tiling()`, `VectorTiler`, `RasterTiler`.
-  - `broker/publisher.py` — `RabbitMQPublisher` (aio-pika): connect at startup, publish JSON messages to `tiling_jobs` queue.
   - `db/connection.py` — SQLite engines (sync + async) for `UploadSession` tracking.
   - `db/repository.py` — `UploadSessionRepository` (async, for FastAPI) and `SyncUploadSessionRepository` (sync, for worker).
   - `storage/chunk_storage.py` — `ChunkStorage`: write `.part` files, assemble into final file.
 - **`app/domain/models.py`** — `UploadSession` SQLModel table; `JobStatus` enum.
 - **`app/domain/schemas.py`** — Pydantic request/response models.
 - **`app/core/config.py`** — `Settings` reads `.env`; exposes `UPLOAD_DIR`, `TILES_DIR`, `CHUNKS_DIR`, `RABBITMQ_URL`, `CHUNK_UPLOAD_THRESHOLD`.
-- **`app/workers/tiling_worker.py`** — Standalone pika consumer; calls `TilingService.process_tiling()`, updates `UploadSession` status.
+- **`app/workers/celery_app.py`** — Celery app instance, configured with RabbitMQ broker + rpc:// result backend.
+- **`app/workers/tasks.py`** — `@celery_app.task process_tiling_task()` — calls `TilingService.process_tiling()`, updates `UploadSession` status.
 
 ### Upload flows
 
 **Small file (< `CHUNK_UPLOAD_THRESHOLD`, default 10 MB):**
 ```
 POST /api/v1/upload-and-tile   (multipart/form-data)
-→ file saved → UploadSession created → RabbitMQ job published → 200 TilingJobResponse
+→ file saved → UploadSession created → Celery task queued → 200 TilingJobResponse
 ```
 
 **Large file (chunked, pause/resume):**
@@ -75,7 +75,7 @@ POST /api/v1/uploads/init              { filename, total_size }
 
 PATCH /api/v1/uploads/{upload_id}      Content-Range: bytes 0-10485759/52428800
 → chunk stored as data/chunks/{upload_id}/{index}.part
-→ on last chunk: file assembled → FileService.prepare_source_path() → RabbitMQ job published
+→ on last chunk: file assembled → FileService.prepare_source_path() → Celery task queued
 
 GET /api/v1/uploads/{upload_id}/status
 → { status: pending|processing|done|failed, received_bytes, total_size }
@@ -83,10 +83,10 @@ GET /api/v1/uploads/{upload_id}/status
 
 ### Tiling flow
 
-1. Worker receives JSON from `tiling_jobs` queue.
+1. Celery worker receives `process_tiling_task` from RabbitMQ broker.
 2. Updates `UploadSession.status = processing`.
 3. Calls `TilingService.process_tiling(file_type, source_path, layer_id)`.
-4. Updates status to `done` or `failed`.
+4. Updates status to `done` or `failed` (with error_message on failure).
 5. Tiles served statically at `/tiles/<layer_id>/{z}/{x}/{y}.png`.
 
 ### Data directory layout
@@ -126,11 +126,12 @@ curl http://localhost:8000/
 # RabbitMQ connectivity
 docker ps | grep rabbitmq  # or check http://localhost:15672
 
-# Worker logs should show connection to RabbitMQ
-# If no "Connected to RabbitMQ" message, check RABBITMQ_URL in .env
+# Celery worker logs should show "Connected to amqp://..."
+# If connection fails, check RABBITMQ_URL in .env
 ```
 
 **Common issues:**
 - `ConnectionError` connecting to RabbitMQ: Ensure RabbitMQ Docker container is running (`docker start rabbitmq`)
+- Celery task not running: Check that Celery worker is running in a separate terminal
 - Database locked errors: Only run one worker instance at a time; SQLite doesn't support concurrent writes well
 - File permissions: Ensure `data/` directory is writable (`chmod -R 755 data/`)

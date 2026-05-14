@@ -2,15 +2,33 @@
 
 ## Getting Started
 
-1. Install the required dependencies:
+### Prerequisites
+- Python 3.11+
+- Docker (for RabbitMQ)
+
+### Setup
+
+1. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Run the FastAPI server:
+2. Start RabbitMQ (Docker):
 ```bash
-uvicorn app.main:app --reload
+docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management
 ```
+
+3. Run FastAPI server (terminal 1):
+```bash
+uvicorn app.main:app --reload --port=8080
+```
+
+4. Run Celery worker (terminal 2):
+```bash
+celery -A app.workers.celery_app worker --loglevel=info
+```
+
+API docs available at `http://localhost:8080/docs`
 
 
 

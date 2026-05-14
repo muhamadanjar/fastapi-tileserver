@@ -13,17 +13,12 @@ from app.domain.schemas import (
     UploadInitResponse,
 )
 from app.core.config import settings
-from app.infrastructure.broker.publisher import RabbitMQPublisher
 from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import UploadSessionRepository
 from app.usecases.init_chunked_upload import InitChunkedUploadUseCase
 from app.usecases.receive_chunk import ReceiveChunkUseCase
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
-
-
-def _get_publisher(request: Request) -> RabbitMQPublisher:
-    return request.app.state.publisher
 
 
 def _get_repo(session=Depends(get_async_session)) -> UploadSessionRepository:
@@ -55,7 +50,6 @@ async def receive_chunk(
     request: Request,
     content_range: str = Header(..., alias="Content-Range"),
     repo: UploadSessionRepository = Depends(_get_repo),
-    publisher: RabbitMQPublisher = Depends(_get_publisher),
 ):
     try:
         range_part, total_str = content_range.replace("bytes ", "").split("/")
@@ -72,7 +66,7 @@ async def receive_chunk(
         raise HTTPException(status_code=400, detail="Empty request body.")
 
     try:
-        use_case = ReceiveChunkUseCase(repo, publisher)
+        use_case = ReceiveChunkUseCase(repo)
         return await use_case.execute(upload_id, range_start, range_end, total_size, chunk_data)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=exc.message)

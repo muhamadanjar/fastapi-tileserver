@@ -1,8 +1,7 @@
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 
 from app.core.config import settings
 from app.domain.schemas import TilingJobResponse
-from app.infrastructure.broker.publisher import RabbitMQPublisher
 from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import UploadSessionRepository
 from app.infrastructure.services.file_service import FileService
@@ -11,17 +10,11 @@ from app.usecases.process_upload import ProcessUploadUseCase
 router = APIRouter()
 
 
-def _get_publisher(request: Request) -> RabbitMQPublisher:
-    return request.app.state.publisher
-
-
 def get_process_upload_usecase(
-    request: Request,
     session=Depends(get_async_session),
 ) -> ProcessUploadUseCase:
     return ProcessUploadUseCase(
         FileService(),
-        _get_publisher(request),
         UploadSessionRepository(session),
     )
 
