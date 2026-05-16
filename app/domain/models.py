@@ -25,3 +25,18 @@ class UploadSession(SQLModel, table=True):
     final_path: Optional[str] = Field(default=None)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Layer(SQLModel, table=True):
+    __tablename__ = "layers"
+
+    id: str = Field(primary_key=True)
+    upload_session_id: str = Field(foreign_key="upload_sessions.id")
+    filename: str
+    file_type: str
+    tile_url_template: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    bbox_west: Optional[float] = Field(default=None)
+    bbox_south: Optional[float] = Field(default=None)
+    bbox_east: Optional[float] = Field(default=None)
+    bbox_north: Optional[float] = Field(default=None)

@@ -5,7 +5,7 @@ from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Session
 
-from app.domain.models import UploadSession, JobStatus
+from app.domain.models import UploadSession, Layer, JobStatus
 from app.core.exceptions import SessionNotFoundError
 
 
@@ -20,10 +20,10 @@ class UploadSessionRepository:
         return upload_session
 
     async def get_by_id(self, upload_id: str) -> Optional[UploadSession]:
-        result = await self.session.exec(
+        result = await self.session.execute(
             select(UploadSession).where(UploadSession.id == upload_id)
         )
-        return result.first()
+        return result.scalars().first()
 
     async def update_received_bytes(self, upload_id: str, received_bytes: int) -> None:
         session_obj = await self.get_by_id(upload_id)
@@ -76,3 +76,33 @@ class SyncUploadSessionRepository:
             session_obj.updated_at = datetime.utcnow()
             self.session.add(session_obj)
             self.session.commit()
+
+
+class SyncLayerRepository:
+    """Synchronous variant for the worker process."""
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create(self, layer: Layer) -> Layer:
+        self.session.add(layer)
+        self.session.commit()
+        self.session.refresh(layer)
+        return layer
+
+
+class LayerRepository:
+    """Async variant for FastAPI endpoints."""
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def list_all(self) -> list[Layer]:
+        result = await self.session.execute(select(Layer))
+        return result.scalars().all()
+
+    async def get_by_id(self, layer_id: str) -> Optional[Layer]:
+        result = await self.session.execute(
+            select(Layer).where(Layer.id == layer_id)
+        )
+        return result.scalars().first()

@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional
+from datetime import datetime
 
 
 class TilingJobRequest(BaseModel):
@@ -9,6 +10,7 @@ class TilingJobRequest(BaseModel):
 
 class TilingJobResponse(BaseModel):
     message: str
+    upload_id: str
     file_type: str
     layer_id: str
     tile_url_template: str
@@ -50,3 +52,21 @@ class JobStatusResponse(BaseModel):
     total_size: int
     error_message: Optional[str] = None
     tile_url_template: Optional[str] = None
+    bbox: Optional[list[float]] = None
+
+
+class LayerResponse(BaseModel):
+    id: str
+    upload_session_id: str
+    filename: str
+    file_type: str
+    tile_url_template: str
+    created_at: datetime
+    bbox: Optional[list[float]] = None
+
+
+class FeatureQueryResponse(BaseModel):
+    type: str
+    count: int
+    features: Optional[list[dict]] = None
+    values: Optional[dict[str, float]] = None

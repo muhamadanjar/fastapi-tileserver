@@ -4,14 +4,18 @@ from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 
 
+# Connect args differ for SQLite vs PostgreSQL
+_sync_connect_args = {} if settings.SESSIONS_USE_POSTGRESQL else {"check_same_thread": False}
+_async_connect_args = {} if settings.SESSIONS_USE_POSTGRESQL else {"check_same_thread": False}
+
 sync_engine = create_engine(
     settings.SESSIONS_DB_URL,
-    connect_args={"check_same_thread": False},
+    connect_args=_sync_connect_args,
 )
 
 async_engine = create_async_engine(
     settings.SESSIONS_DB_URL_ASYNC,
-    connect_args={"check_same_thread": False},
+    connect_args=_async_connect_args,
 )
 
 AsyncSessionLocal = sessionmaker(

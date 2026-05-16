@@ -44,6 +44,7 @@ class ProcessUploadUseCase:
 
         return TilingJobResponse(
             message="File uploaded successfully, tiling job queued.",
+            upload_id=upload_id,
             file_type=file_type,
             layer_id=layer_id,
             tile_url_template=f"/tiles/{layer_id}/{{z}}/{{x}}/{{y}}.png",

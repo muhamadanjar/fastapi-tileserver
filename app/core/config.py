@@ -1,8 +1,9 @@
 
 from typing import List, Union
-from pydantic import AnyHttpUrl, field_validator
+from pydantic import AnyHttpUrl, field_validator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
+
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "FastAPI Tileserver"
@@ -17,27 +18,47 @@ class Settings(BaseSettings):
     # RabbitMQ
     RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"
 
+    # Redis
+    REDIS_URL: str = Field(default="redis://localhost:6379/0", env="REDIS_URL")
+
     # Chunked upload threshold in bytes (default 10 MB)
     CHUNK_UPLOAD_THRESHOLD: int = 10_485_760
 
+    # Sessions database - use PostgreSQL by default, SQLite as fallback
+    SESSIONS_USE_POSTGRESQL: bool = Field(default=True, env="SESSIONS_USE_POSTGRESQL")
+
     @property
     def SESSIONS_DB_URL(self) -> str:
+        if self.SESSIONS_USE_POSTGRESQL:
+            return f"postgresql://{self.DB_USER}:{self.DB_PASS}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         return f"sqlite:///{self.BASE_DIR / 'data' / 'sessions.db'}"
 
     @property
     def SESSIONS_DB_URL_ASYNC(self) -> str:
+        if self.SESSIONS_USE_POSTGRESQL:
+            return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASS}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         return f"sqlite+aiosqlite:///{self.BASE_DIR / 'data' / 'sessions.db'}"
     
     # CORS
-    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
+    CORS_ALLOWED_ORIGINS: str = Field(default="*", env="CORS_ALLOWED_ORIGINS")
+    CORS_ALLOWED_METHODS: str = Field(default="*", env="CORS_ALLOWED_METHODS")
+    CORS_ALLOWED_HEADERS: str = Field(default="*", env="CORS_ALLOWED_HEADERS")
+    CORS_ALLOW_CREDENTIALS: bool = Field(default=True, env="CORS_ALLOW_CREDENTIALS")
 
-    @field_validator("BACKEND_CORS_ORIGINS", mode="before")
-    def assemble_cors_origins(cls, v: Union[str, List[str]]) -> List[str]:
-        if isinstance(v, str) and not v.startswith("["):
-            return [i.strip() for i in v.split(",")]
-        elif isinstance(v, (list, str)):
-            return v
-        raise ValueError(v)
+    def get_cors_origins(self) -> List[str]:
+        if isinstance(self.CORS_ALLOWED_ORIGINS, str):
+            return [i.strip() for i in self.CORS_ALLOWED_ORIGINS.split(",")]
+        return self.CORS_ALLOWED_ORIGINS
+
+    def get_cors_methods(self) -> List[str]:
+        if isinstance(self.CORS_ALLOWED_METHODS, str):
+            return [i.strip() for i in self.CORS_ALLOWED_METHODS.split(",")]
+        return self.CORS_ALLOWED_METHODS
+
+    def get_cors_headers(self) -> List[str]:
+        if isinstance(self.CORS_ALLOWED_HEADERS, str):
+            return [i.strip() for i in self.CORS_ALLOWED_HEADERS.split(",")]
+        return self.CORS_ALLOWED_HEADERS
 
     # Database (PostGIS)
     DB_USER: str = "postgres"
@@ -45,12 +66,18 @@ class Settings(BaseSettings):
     DB_HOST: str = "localhost"
     DB_PORT: str = "5432"
     DB_NAME: str = "gis_db"
+    DB_TYPE: str = Field(default="postgres")
     
     @property
     def DATABASE_URL(self) -> str:
         return f"postgresql://{self.DB_USER}:{self.DB_PASS}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
-    model_config = SettingsConfigDict(case_sensitive=True, env_file=".env")
+    model_config = SettingsConfigDict(
+        env_file=str(BASE_DIR / ".env"),
+        extra="allow",
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+    )
 
 settings = Settings()
 

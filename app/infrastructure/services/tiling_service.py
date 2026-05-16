@@ -7,7 +7,7 @@ import geopandas as gpd
 import mercantile
 from shapely.geometry import box
 from pathlib import Path
-from typing import Union, Dict
+from typing import Union, Dict, Optional, Tuple
 import rasterio
 from rasterio.warp import calculate_default_transform, reproject, Resampling, transform_bounds
 from rasterio.transform import from_bounds
@@ -39,11 +39,11 @@ class VectorTiler:
         except Exception as e:
             raise TilingProcessError(f"Failed to load vector data: {str(e)}")
 
-    def generate(self):
+    def generate(self) -> Tuple[float, float, float, float]:
         if self.gdf is None: self.load_data()
-        
+
         print("Starting Vector Tile Generation...")
-        
+        print(f"{self.source_path}")
         # Optimization: Only process tiles within bounds
         # Note: mercantile.tiles expects bounds in lng/lat (4326).
         # We need to convert 3857 bounds to 4326 - use geopandas for safety
@@ -53,13 +53,15 @@ class VectorTiler:
 
         for z in range(self.min_zoom, self.max_zoom + 1):
             tiles_bounds = list(mercantile.tiles(b[0], b[1], b[2], b[3], [z]))
-            
+
             if not tiles_bounds: continue
-            
+
             print(f"Processing Zoom {z}: {len(tiles_bounds)} tiles estimated.")
 
             for tile in tiles_bounds:
                 self._render_tile(tile.z, tile.x, tile.y)
+
+        return (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
 
     def _render_tile(self, z, x, y):
         wm_bounds = mercantile.xy_bounds(x, y, z)
@@ -109,25 +111,26 @@ class RasterTiler:
         # Jangan terlalu jauh (limit ke 20 agar tidak overload disk)
         return min(max(detected_zoom, 0), 20)
 
-    def generate(self):
+    def generate(self) -> Tuple[float, float, float, float]:
         try:
             with rasterio.open(self.source_path) as src:
                 if self.max_zoom is None:
                     self.max_zoom = self._calculate_max_zoom(src)
                     print(f"Detected optimal Max Zoom for Raster: {self.max_zoom}")
 
-                for z in range(self.min_zoom, self.max_zoom + 1):
-                    # For optimization, we should calculate bounds in 4326 to get tiles list
-                    # Use transform_bounds to convert src bounds to EPSG:4326
-                    if src.crs != "EPSG:4326":
-                        min_lon, min_lat, max_lon, max_lat = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
-                    else:
-                        min_lon, min_lat, max_lon, max_lat = src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top
+                # Compute bounds once (same for all zoom levels)
+                if src.crs and src.crs.to_epsg() != 4326:
+                    min_lon, min_lat, max_lon, max_lat = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
+                else:
+                    min_lon, min_lat, max_lon, max_lat = src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top
 
+                for z in range(self.min_zoom, self.max_zoom + 1):
                     tiles = list(mercantile.tiles(min_lon, min_lat, max_lon, max_lat, [z]))
-                    
+
                     for t in tiles:
                         self._render_tile(src, t.z, t.x, t.y)
+
+                return (float(min_lon), float(min_lat), float(max_lon), float(max_lat))
         except Exception as e:
              raise TilingProcessError(f"Raster processing failed: {str(e)}")
 
@@ -168,22 +171,24 @@ class RasterTiler:
 
 class TilingService:
     @staticmethod
-    def process_tiling(task_type: str, source_path: Path, layer_id: str):
+    def process_tiling(task_type: str, source_path: Path, layer_id: str) -> Optional[Tuple[float, float, float, float]]:
         output_dir = settings.TILES_DIR / layer_id
-        
+
         try:
+            bounds = None
             if task_type == 'vector':
                 tiler = VectorTiler(str(source_path), output_dir)
-                tiler.generate()
+                tiler.load_data()
+                bounds = tiler.generate()
             elif task_type == 'raster':
                 tiler = RasterTiler(str(source_path), output_dir)
-                tiler.generate()
+                bounds = tiler.generate()
             else:
                 raise ValueError("Unknown task type")
-            
-            print(f"Tiling complete for {layer_id}")
-            
+
+            print(f"Tiling complete for {layer_id}, bounds: {bounds}")
+            return bounds
+
         except Exception as e:
             print(f"Error in tiling job {layer_id}: {e}")
-            # In a real app, update job status in DB
             raise e

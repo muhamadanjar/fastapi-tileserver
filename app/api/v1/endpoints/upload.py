@@ -14,7 +14,7 @@ from app.domain.schemas import (
 )
 from app.core.config import settings
 from app.infrastructure.db.connection import get_async_session
-from app.infrastructure.db.repository import UploadSessionRepository
+from app.infrastructure.db.repository import UploadSessionRepository, LayerRepository
 from app.usecases.init_chunked_upload import InitChunkedUploadUseCase
 from app.usecases.receive_chunk import ReceiveChunkUseCase
 
@@ -79,8 +79,9 @@ async def receive_chunk(
 @router.get("/{upload_id}/status", response_model=JobStatusResponse)
 async def get_upload_status(
     upload_id: str,
-    repo: UploadSessionRepository = Depends(_get_repo),
+    session_dep=Depends(get_async_session),
 ):
+    repo = UploadSessionRepository(session_dep)
     session = await repo.get_by_id(upload_id)
     if not session:
         raise HTTPException(status_code=404, detail=f"Upload session '{upload_id}' not found.")
@@ -90,6 +91,14 @@ async def get_upload_status(
         if session.status == "done"
         else None
     )
+
+    bbox = None
+    if session.status == "done":
+        layer_repo = LayerRepository(session_dep)
+        layer = await layer_repo.get_by_id(session.layer_id)
+        if layer and layer.bbox_west is not None:
+            bbox = [layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]
+
     return JobStatusResponse(
         upload_id=session.id,
         layer_id=session.layer_id,
@@ -98,4 +107,5 @@ async def get_upload_status(
         total_size=session.total_size,
         error_message=session.error_message,
         tile_url_template=tile_url,
+        bbox=bbox,
     )
