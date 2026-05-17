@@ -16,8 +16,8 @@ class InitChunkedUploadUseCase:
         file_type = FileService.allowed_file(filename)
 
         upload_id = str(uuid.uuid4())
+        layer_id = str(uuid.uuid4())
         unique_name = FileService.get_unique_filename(filename)
-        layer_id = Path(unique_name).stem
 
         ChunkStorage(upload_id).ensure_dir()
 

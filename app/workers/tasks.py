@@ -6,6 +6,7 @@ from app.infrastructure.db.connection import sync_engine
 from app.infrastructure.db.repository import SyncUploadSessionRepository, SyncLayerRepository
 from app.infrastructure.services.tiling_service import TilingService
 from app.domain.models import JobStatus, Layer
+from app.core.utils import slugify
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -25,8 +26,10 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
                 layer = Layer(
                     id=layer_id,
                     upload_session_id=upload_id,
+                    code=slugify(upload_session.filename),
                     filename=upload_session.filename,
                     file_type=file_type,
+                    layer_type='tile',
                     tile_url_template=f"/tiles/{layer_id}/{{z}}/{{x}}/{{y}}.png",
                     bbox_west=bounds[0] if bounds else None,
                     bbox_south=bounds[1] if bounds else None,

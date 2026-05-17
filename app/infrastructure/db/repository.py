@@ -106,3 +106,17 @@ class LayerRepository:
             select(Layer).where(Layer.id == layer_id)
         )
         return result.scalars().first()
+
+    async def create(self, layer: Layer) -> Layer:
+        self.session.add(layer)
+        await self.session.commit()
+        await self.session.refresh(layer)
+        return layer
+
+    async def delete(self, layer_id: str) -> bool:
+        layer = await self.get_by_id(layer_id)
+        if layer:
+            await self.session.delete(layer)
+            await self.session.commit()
+            return True
+        return False

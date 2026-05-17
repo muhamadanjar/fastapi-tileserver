@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime
-from typing import Optional
-from sqlmodel import SQLModel, Field
+from typing import Dict, Optional, Any
+from sqlmodel import SQLModel, Field, Column, JSON
 
 
 class JobStatus(str, enum.Enum):
@@ -9,6 +9,15 @@ class JobStatus(str, enum.Enum):
     processing = "processing"
     done = "done"
     failed = "failed"
+
+class LayerType(str, enum.Enum):
+    tile = "tile"
+    vector = "vector"
+    wms = "wms"
+    wfs = "wfs"
+    wmts = "wmts"
+
+
 
 
 class UploadSession(SQLModel, table=True):
@@ -31,10 +40,22 @@ class Layer(SQLModel, table=True):
     __tablename__ = "layers"
 
     id: str = Field(primary_key=True)
-    upload_session_id: str = Field(foreign_key="upload_sessions.id")
+    upload_session_id: Optional[str] = Field(default=None, foreign_key="upload_sessions.id")
+    code: Optional[str] = Field(default=None)
+    layer_type: str = Field(default=LayerType.tile)
     filename: str
     file_type: str
     tile_url_template: str
+    is_active: bool = Field(default=False)
+    is_visible: bool = Field(default=False)
+    opacity: float = Field(default=1.0)
+    sorting: int = Field(default=0)
+    file_metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        sa_column=Column(JSON),
+        description="Additional metadata about the file in JSON format"
+    )
+
     created_at: datetime = Field(default_factory=datetime.utcnow)
     bbox_west: Optional[float] = Field(default=None)
     bbox_south: Optional[float] = Field(default=None)

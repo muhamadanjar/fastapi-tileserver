@@ -20,7 +20,7 @@ class ProcessUploadUseCase:
 
     async def execute(self, file: UploadFile) -> TilingJobResponse:
         source_path, file_type = await self.file_service.save_upload(file)
-        layer_id = source_path.stem
+        layer_id = str(uuid.uuid4())
         upload_id = str(uuid.uuid4())
 
         session = UploadSession(

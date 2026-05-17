@@ -57,12 +57,22 @@ class JobStatusResponse(BaseModel):
 
 class LayerResponse(BaseModel):
     id: str
-    upload_session_id: str
+    upload_session_id: Optional[str] = None
+    layer_type: str = "tile"
     filename: str
     file_type: str
     tile_url_template: str
+    status: str = "done"
     created_at: datetime
     bbox: Optional[list[float]] = None
+    file_metadata: Optional[dict] = None
+
+
+class ExternalLayerRequest(BaseModel):
+    layer_type: str
+    filename: str
+    source_url: str
+    params: Optional[dict] = None
 
 
 class FeatureQueryResponse(BaseModel):
