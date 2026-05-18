@@ -1,6 +1,7 @@
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any
+from sqlalchemy import DateTime
 from sqlmodel import SQLModel, Field, Column, JSON
 
 
@@ -32,8 +33,8 @@ class UploadSession(SQLModel, table=True):
     status: str = Field(default=JobStatus.pending)
     error_message: Optional[str] = Field(default=None)
     final_path: Optional[str] = Field(default=None)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
 
 
 class Layer(SQLModel, table=True):
@@ -56,7 +57,8 @@ class Layer(SQLModel, table=True):
         description="Additional metadata about the file in JSON format"
     )
 
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
     bbox_west: Optional[float] = Field(default=None)
     bbox_south: Optional[float] = Field(default=None)
     bbox_east: Optional[float] = Field(default=None)

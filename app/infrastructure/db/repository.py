@@ -1,8 +1,9 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import attributes
 from sqlmodel import Session
 
 from app.domain.models import UploadSession, Layer, JobStatus
@@ -108,6 +109,20 @@ class LayerRepository:
         return result.scalars().first()
 
     async def create(self, layer: Layer) -> Layer:
+        self.session.add(layer)
+        await self.session.commit()
+        await self.session.refresh(layer)
+        return layer
+
+    async def update(self, layer_id: str, file_metadata: dict) -> Optional[Layer]:
+        layer = await self.get_by_id(layer_id)
+        if not layer:
+            return None
+        existing = layer.file_metadata or {}
+        merged = {**existing, **file_metadata}
+        layer.file_metadata = merged
+        attributes.flag_modified(layer, "file_metadata")
+        layer.updated_at = datetime.now(timezone.utc)
         self.session.add(layer)
         await self.session.commit()
         await self.session.refresh(layer)

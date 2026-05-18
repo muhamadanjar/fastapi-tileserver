@@ -68,6 +68,15 @@ class LayerResponse(BaseModel):
     file_metadata: Optional[dict] = None
 
 
+class PatchLayerRequest(BaseModel):
+    file_metadata: dict
+
+
+class LayerFieldsResponse(BaseModel):
+    layer_id: str
+    fields: list[str]
+
+
 class ExternalLayerRequest(BaseModel):
     layer_type: str
     filename: str
