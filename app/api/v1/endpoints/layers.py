@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 import geopandas as gpd
@@ -9,6 +10,7 @@ from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLaye
 from app.domain.models import Layer, JobStatus
 from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
+from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_csw
 from app.core.utils import slugify
 
 router = APIRouter(prefix="/layers", tags=["layers"])
@@ -98,6 +100,7 @@ async def patch_layer(
         if upload_session:
             status = upload_session.status
 
+    await asyncio.to_thread(sync_layer, updated)
     return LayerResponse(
         id=updated.id,
         upload_session_id=updated.upload_session_id,
@@ -129,6 +132,7 @@ async def add_external_layer(
         is_visible=True,
     )
     created = await repo.create(layer)
+    await asyncio.to_thread(sync_layer, created)
     return LayerResponse(
         id=created.id,
         upload_session_id=created.upload_session_id,
@@ -150,6 +154,7 @@ async def delete_layer(
     deleted = await repo.delete(layer_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+    await asyncio.to_thread(delete_layer_from_csw, layer_id)
     return {"message": "Layer deleted successfully"}
 
 

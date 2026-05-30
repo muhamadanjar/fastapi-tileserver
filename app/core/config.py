@@ -24,21 +24,6 @@ class Settings(BaseSettings):
     # Chunked upload threshold in bytes (default 10 MB)
     CHUNK_UPLOAD_THRESHOLD: int = 10_485_760
 
-    # Sessions database - use PostgreSQL by default, SQLite as fallback
-    SESSIONS_USE_POSTGRESQL: bool = Field(default=True, env="SESSIONS_USE_POSTGRESQL")
-
-    @property
-    def SESSIONS_DB_URL(self) -> str:
-        if self.SESSIONS_USE_POSTGRESQL:
-            return f"postgresql://{self.DB_USER}:{self.DB_PASS}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
-        return f"sqlite:///{self.BASE_DIR / 'data' / 'sessions.db'}"
-
-    @property
-    def SESSIONS_DB_URL_ASYNC(self) -> str:
-        if self.SESSIONS_USE_POSTGRESQL:
-            return f"postgresql+asyncpg://{self.DB_USER}:{self.DB_PASS}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
-        return f"sqlite+aiosqlite:///{self.BASE_DIR / 'data' / 'sessions.db'}"
-    
     # CORS
     CORS_ALLOWED_ORIGINS: str = Field(default="*", env="CORS_ALLOWED_ORIGINS")
     CORS_ALLOWED_METHODS: str = Field(default="*", env="CORS_ALLOWED_METHODS")
@@ -59,18 +44,6 @@ class Settings(BaseSettings):
         if isinstance(self.CORS_ALLOWED_HEADERS, str):
             return [i.strip() for i in self.CORS_ALLOWED_HEADERS.split(",")]
         return self.CORS_ALLOWED_HEADERS
-
-    # Database (PostGIS)
-    DB_USER: str = "postgres"
-    DB_PASS: str = "postgres"
-    DB_HOST: str = "localhost"
-    DB_PORT: str = "5432"
-    DB_NAME: str = "gis_db"
-    DB_TYPE: str = Field(default="postgres")
-    
-    @property
-    def DATABASE_URL(self) -> str:
-        return f"postgresql://{self.DB_USER}:{self.DB_PASS}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
 
     model_config = SettingsConfigDict(
         env_file=str(BASE_DIR / ".env"),
