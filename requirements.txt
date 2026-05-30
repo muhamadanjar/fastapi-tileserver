@@ -15,3 +15,5 @@ psycopg2==2.9.11
 celery[amqp]==5.4.0
 aiosqlite==0.20.0
 pydantic-settings==2.7.1
+pycsw==2.6.2
+mapbox-vector-tile==2.2.0

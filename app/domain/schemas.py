@@ -26,6 +26,7 @@ class LayerInfo(BaseModel):
 class UploadInitRequest(BaseModel):
     filename: str
     total_size: int
+    output_format: str = "raster"
 
 
 class UploadInitResponse(BaseModel):

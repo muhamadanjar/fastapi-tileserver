@@ -65,7 +65,15 @@ class ReceiveChunkUseCase:
                 layer_id=session.layer_id,
                 file_type=session.file_type,
                 source_path=str(source_path),
+                output_format=session.output_format,
             )
+
+        tile_url = None
+        if is_complete:
+            if session.output_format == "mvt":
+                tile_url = f"/tiles/{session.layer_id}/{{z}}/{{x}}/{{y}}.pbf"
+            else:
+                tile_url = f"/tiles/{session.layer_id}/{{z}}/{{x}}/{{y}}.png"
 
         return ChunkUploadResponse(
             upload_id=upload_id,
@@ -73,9 +81,5 @@ class ReceiveChunkUseCase:
             total_size=total_size,
             is_complete=is_complete,
             layer_id=session.layer_id if is_complete else None,
-            tile_url_template=(
-                f"/tiles/{session.layer_id}/{{z}}/{{x}}/{{y}}.png"
-                if is_complete
-                else None
-            ),
+            tile_url_template=tile_url,
         )

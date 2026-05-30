@@ -13,10 +13,16 @@ class JobStatus(str, enum.Enum):
 
 class LayerType(str, enum.Enum):
     tile = "tile"
+    mvt = "mvt"
     vector = "vector"
     wms = "wms"
     wfs = "wfs"
     wmts = "wmts"
+    esri_mapserver = "esri_mapserver"
+    esri_featureserver = "esri_featureserver"
+    esri_tileserver = "esri_tileserver"
+    esri_vectortileserver = "esri_vectortileserver"
+    esri_imageserver = "esri_imageserver"
 
 
 
@@ -33,6 +39,7 @@ class UploadSession(SQLModel, table=True):
     status: str = Field(default=JobStatus.pending)
     error_message: Optional[str] = Field(default=None)
     final_path: Optional[str] = Field(default=None)
+    output_format: str = Field(default="raster")
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
 

@@ -32,7 +32,7 @@ async def init_upload(
 ):
     try:
         use_case = InitChunkedUploadUseCase(repo)
-        session = await use_case.execute(body.filename, body.total_size)
+        session = await use_case.execute(body.filename, body.total_size, body.output_format)
     except UnsupportedFileFormatException as exc:
         raise HTTPException(status_code=415, detail=exc.message)
 
@@ -86,11 +86,12 @@ async def get_upload_status(
     if not session:
         raise HTTPException(status_code=404, detail=f"Upload session '{upload_id}' not found.")
 
-    tile_url = (
-        f"/tiles/{session.layer_id}/{{z}}/{{x}}/{{y}}.png"
-        if session.status == "done"
-        else None
-    )
+    tile_url = None
+    if session.status == "done":
+        if session.output_format == "mvt":
+            tile_url = f"/tiles/{session.layer_id}/{{z}}/{{x}}/{{y}}.pbf"
+        else:
+            tile_url = f"/tiles/{session.layer_id}/{{z}}/{{x}}/{{y}}.png"
 
     bbox = None
     if session.status == "done":

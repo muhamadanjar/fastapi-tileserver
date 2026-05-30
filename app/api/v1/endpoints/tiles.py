@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.core.config import settings
 from app.domain.schemas import TilingJobResponse
@@ -22,6 +22,7 @@ def get_process_upload_usecase(
 @router.post("/upload-and-tile", response_model=TilingJobResponse)
 async def upload_and_tile(
     file: UploadFile = File(...),
+    output_format: str = Form("raster"),
     use_case: ProcessUploadUseCase = Depends(get_process_upload_usecase),
 ):
     if file.size and file.size > settings.CHUNK_UPLOAD_THRESHOLD:
@@ -33,4 +34,4 @@ async def upload_and_tile(
                 "Use chunked upload: POST /api/v1/uploads/init"
             ),
         )
-    return await use_case.execute(file)
+    return await use_case.execute(file, output_format=output_format)

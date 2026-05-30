@@ -18,7 +18,7 @@ class ProcessUploadUseCase:
         self.file_service = file_service
         self.repo = repo
 
-    async def execute(self, file: UploadFile) -> TilingJobResponse:
+    async def execute(self, file: UploadFile, output_format: str = "raster") -> TilingJobResponse:
         source_path, file_type = await self.file_service.save_upload(file)
         layer_id = str(uuid.uuid4())
         upload_id = str(uuid.uuid4())
@@ -32,6 +32,7 @@ class ProcessUploadUseCase:
             received_bytes=file.size or 0,
             status=JobStatus.pending,
             final_path=str(source_path),
+            output_format=output_format,
         )
         await self.repo.create(session)
 
@@ -40,12 +41,18 @@ class ProcessUploadUseCase:
             layer_id=layer_id,
             file_type=file_type,
             source_path=str(source_path),
+            output_format=output_format,
         )
+
+        if output_format == "mvt":
+            tile_url = f"/tiles/{layer_id}/{{z}}/{{x}}/{{y}}.pbf"
+        else:
+            tile_url = f"/tiles/{layer_id}/{{z}}/{{x}}/{{y}}.png"
 
         return TilingJobResponse(
             message="File uploaded successfully, tiling job queued.",
             upload_id=upload_id,
             file_type=file_type,
             layer_id=layer_id,
-            tile_url_template=f"/tiles/{layer_id}/{{z}}/{{x}}/{{y}}.png",
+            tile_url_template=tile_url,
         )

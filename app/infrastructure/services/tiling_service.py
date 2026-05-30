@@ -14,6 +14,8 @@ from rasterio.transform import from_bounds
 from PIL import Image
 import numpy as np
 import math
+import pandas as pd
+import mapbox_vector_tile
 
 from app.core.config import settings
 from app.core.exceptions import TilingProcessError
@@ -89,6 +91,116 @@ class VectorTiler:
         
         plt.savefig(file_path, format='png', bbox_inches='tight', pad_inches=0, transparent=True)
         plt.close(fig)
+
+class MVTTiler:
+    def __init__(self, source_path: str, output_dir: Path, layer_name: str = "default", min_zoom: int = 0, max_zoom: int = 14):
+        self.source_path = source_path
+        self.output_dir = output_dir
+        self.layer_name = layer_name
+        self.min_zoom = min_zoom
+        self.max_zoom = max_zoom
+        self.gdf = None
+        self.sindex = None
+
+    def load_data(self):
+        try:
+            print(f"Loading Vector Data for MVT from: {self.source_path}")
+            self.gdf = gpd.read_file(self.source_path)
+
+            if self.gdf.crs != "EPSG:3857":
+                self.gdf = self.gdf.to_crs(epsg=3857)
+
+            self.sindex = self.gdf.sindex
+        except Exception as e:
+            raise TilingProcessError(f"Failed to load vector data for MVT: {str(e)}")
+
+    def _sanitize_properties(self, row: pd.Series) -> dict:
+        sanitized = {}
+        for key, val in row.items():
+            if pd.isna(val):
+                sanitized[key] = None
+            elif isinstance(val, (np.integer, np.floating)):
+                sanitized[key] = val.item()
+            elif isinstance(val, (int, float, str, bool, type(None))):
+                sanitized[key] = val
+            else:
+                sanitized[key] = str(val)
+        return sanitized
+
+    def generate(self) -> Tuple[float, float, float, float]:
+        if self.gdf is None:
+            self.load_data()
+
+        print("Starting MVT Tile Generation...")
+        minx, miny, maxx, maxy = self.gdf.total_bounds
+        bounds_gdf = gpd.GeoSeries([box(minx, miny, maxx, maxy)], crs="EPSG:3857").to_crs("EPSG:4326")
+        b = bounds_gdf.total_bounds
+
+        for z in range(self.min_zoom, self.max_zoom + 1):
+            tiles_bounds = list(mercantile.tiles(b[0], b[1], b[2], b[3], [z]))
+
+            if not tiles_bounds:
+                continue
+
+            print(f"Processing MVT Zoom {z}: {len(tiles_bounds)} tiles estimated.")
+
+            for tile in tiles_bounds:
+                self._encode_tile(tile.z, tile.x, tile.y)
+
+        return (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+
+    def _encode_tile(self, z: int, x: int, y: int):
+        wm_bounds = mercantile.xy_bounds(x, y, z)
+        bbox_polygon = box(wm_bounds.left, wm_bounds.bottom, wm_bounds.right, wm_bounds.top)
+
+        possible_matches = list(self.sindex.intersection(bbox_polygon.bounds))
+        if not possible_matches:
+            return
+
+        gdf_tile = self.gdf.iloc[possible_matches]
+        gdf_tile = gdf_tile[gdf_tile.intersects(bbox_polygon)]
+
+        if gdf_tile.empty:
+            return
+
+        features = []
+        for _, row in gdf_tile.iterrows():
+            props = {}
+            for col in gdf_tile.columns:
+                if col != 'geometry':
+                    props[col] = row[col]
+
+            features.append({
+                "geometry": row.geometry.__geo_interface__,
+                "properties": self._sanitize_properties(pd.Series(props)),
+            })
+
+        try:
+            pbf_bytes = mapbox_vector_tile.encode(
+                {
+                    "name": self.layer_name,
+                    "features": features,
+                },
+                default_options={
+                    "quantize_bounds": (
+                        wm_bounds.left, wm_bounds.bottom,
+                        wm_bounds.right, wm_bounds.top,
+                    ),
+                    "extents": 4096,
+                },
+            )
+        except Exception as e:
+            print(f"Failed to encode MVT tile {z}/{x}/{y}: {str(e)}")
+            return
+
+        folder_path = self.output_dir / str(z) / str(x)
+        folder_path.mkdir(parents=True, exist_ok=True)
+        file_path = folder_path / f"{y}.pbf"
+
+        try:
+            file_path.write_bytes(pbf_bytes)
+        except Exception as e:
+            print(f"Failed to write MVT tile {z}/{x}/{y}: {str(e)}")
 
 class RasterTiler:
     def __init__(self, source_path: str, output_dir: Path, min_zoom=0, max_zoom=None):
@@ -171,12 +283,16 @@ class RasterTiler:
 
 class TilingService:
     @staticmethod
-    def process_tiling(task_type: str, source_path: Path, layer_id: str) -> Optional[Tuple[float, float, float, float]]:
+    def process_tiling(task_type: str, source_path: Path, layer_id: str, output_format: str = "raster") -> Optional[Tuple[float, float, float, float]]:
         output_dir = settings.TILES_DIR / layer_id
 
         try:
             bounds = None
-            if task_type == 'vector':
+            if task_type == 'vector' and output_format == 'mvt':
+                tiler = MVTTiler(str(source_path), output_dir, layer_name=layer_id)
+                tiler.load_data()
+                bounds = tiler.generate()
+            elif task_type == 'vector':
                 tiler = VectorTiler(str(source_path), output_dir)
                 tiler.load_data()
                 bounds = tiler.generate()
