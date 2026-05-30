@@ -48,7 +48,7 @@ async def list_layers(
             status=status,
             created_at=layer.created_at,
             bbox=[layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north] if all([layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]) else None,
-            file_metadata=layer.file_metadata,
+            # file_metadata=layer.file_metadata,
         ))
     return responses
 
