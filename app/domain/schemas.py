@@ -70,7 +70,10 @@ class LayerResponse(BaseModel):
 
 
 class PatchLayerRequest(BaseModel):
-    file_metadata: dict
+    file_metadata: Optional[dict] = None
+    filename: Optional[str] = None
+    layer_type: Optional[str] = None
+    tile_url_template: Optional[str] = None
 
 
 class LayerFieldsResponse(BaseModel):

@@ -114,14 +114,28 @@ class LayerRepository:
         await self.session.refresh(layer)
         return layer
 
-    async def update(self, layer_id: str, file_metadata: dict) -> Optional[Layer]:
+    async def update(
+        self,
+        layer_id: str,
+        file_metadata: Optional[dict] = None,
+        filename: Optional[str] = None,
+        layer_type: Optional[str] = None,
+        tile_url_template: Optional[str] = None,
+    ) -> Optional[Layer]:
         layer = await self.get_by_id(layer_id)
         if not layer:
             return None
-        existing = layer.file_metadata or {}
-        merged = {**existing, **file_metadata}
-        layer.file_metadata = merged
-        attributes.flag_modified(layer, "file_metadata")
+        if file_metadata is not None:
+            existing = layer.file_metadata or {}
+            merged = {**existing, **file_metadata}
+            layer.file_metadata = merged
+            attributes.flag_modified(layer, "file_metadata")
+        if filename is not None:
+            layer.filename = filename
+        if layer_type is not None:
+            layer.layer_type = layer_type
+        if tile_url_template is not None:
+            layer.tile_url_template = tile_url_template
         layer.updated_at = datetime.now(timezone.utc)
         self.session.add(layer)
         await self.session.commit()

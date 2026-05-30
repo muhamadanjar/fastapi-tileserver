@@ -90,7 +90,13 @@ async def patch_layer(
     repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
-    updated = await repo.update(layer_id, req.file_metadata)
+    updated = await repo.update(
+        layer_id,
+        file_metadata=req.file_metadata,
+        filename=req.filename,
+        layer_type=req.layer_type,
+        tile_url_template=req.tile_url_template,
+    )
     if not updated:
         raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
 
