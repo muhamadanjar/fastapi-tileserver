@@ -12,6 +12,7 @@ from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
 from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_csw
 from app.core.utils import slugify
+from app.workers.tasks import process_tiling_task
 
 router = APIRouter(prefix="/layers", tags=["layers"])
 
@@ -119,6 +120,32 @@ async def patch_layer(
         bbox=[updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north] if all([updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north]) else None,
         file_metadata=updated.file_metadata,
     )
+
+
+@router.post("/{layer_id}/retile")
+async def retile_layer(
+    layer_id: str,
+    repo: LayerRepository = Depends(_get_layer_repo),
+    session_repo: UploadSessionRepository = Depends(_get_session_repo),
+):
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found")
+    if not layer.upload_session_id:
+        raise HTTPException(status_code=422, detail="External layers cannot be retiled")
+
+    upload_session = await session_repo.get_by_id(layer.upload_session_id)
+    if not upload_session or not upload_session.final_path:
+        raise HTTPException(status_code=404, detail="Source file not found")
+    if not Path(upload_session.final_path).exists():
+        raise HTTPException(status_code=404, detail="Source file missing from disk")
+
+    output_format = "mvt" if layer.layer_type == "mvt" else "raster"
+    process_tiling_task.delay(
+        upload_session.id, layer.id,
+        layer.file_type, upload_session.final_path, output_format
+    )
+    return {"message": "Retiling queued", "upload_id": upload_session.id}
 
 
 @router.post("/external", response_model=LayerResponse)

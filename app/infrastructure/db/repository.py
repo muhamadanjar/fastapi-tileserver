@@ -85,6 +85,12 @@ class SyncLayerRepository:
     def __init__(self, session: Session):
         self.session = session
 
+    def get_by_id(self, layer_id: str) -> Optional[Layer]:
+        result = self.session.exec(
+            select(Layer).where(Layer.id == layer_id)
+        )
+        return result.first()
+
     def create(self, layer: Layer) -> Layer:
         self.session.add(layer)
         self.session.commit()

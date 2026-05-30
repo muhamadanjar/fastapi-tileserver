@@ -21,13 +21,14 @@ from app.core.config import settings
 from app.core.exceptions import TilingProcessError
 
 class VectorTiler:
-    def __init__(self, source_path: str, output_dir: Path, min_zoom=0, max_zoom=None):
+    def __init__(self, source_path: str, output_dir: Path, min_zoom=0, max_zoom=None, style: Optional[Dict] = None):
         self.source_path = source_path
         self.output_dir = output_dir
         self.min_zoom = min_zoom
         self.max_zoom = max_zoom or 18 # Default ke 18 untuk vector jika tidak diatur
         self.gdf = None
         self.sindex = None
+        self.style = style
 
     def load_data(self):
         try:
@@ -65,32 +66,80 @@ class VectorTiler:
 
         return (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
 
+    def _get_plot_kwargs(self, geom_base: str) -> dict:
+        DEFAULTS = {
+            "Point": {
+                "facecolor": (74/255, 144/255, 226/255),
+                "edgecolor": (1.0, 1.0, 1.0),
+                "linewidth": 1.5,
+                "alpha": 0.9,
+                "markersize": 6,
+            },
+            "LineString": {
+                "edgecolor": (74/255, 144/255, 226/255),
+                "linewidth": 2.0,
+                "alpha": 0.85,
+            },
+            "Polygon": {
+                "facecolor": (74/255, 144/255, 226/255),
+                "edgecolor": (1.0, 1.0, 1.0),
+                "linewidth": 1.0,
+                "alpha": 0.7,
+            },
+        }
+
+        kwargs = dict(DEFAULTS.get(geom_base, DEFAULTS["Polygon"]))
+
+        if self.style and geom_base in self.style:
+            style_override = self.style[geom_base]
+            if "fillColor" in style_override:
+                rgb = style_override["fillColor"]
+                kwargs["facecolor"] = (rgb[0]/255, rgb[1]/255, rgb[2]/255)
+            if "strokeColor" in style_override:
+                rgb = style_override["strokeColor"]
+                kwargs["edgecolor"] = (rgb[0]/255, rgb[1]/255, rgb[2]/255)
+            if "strokeWidth" in style_override:
+                kwargs["linewidth"] = style_override["strokeWidth"]
+            if "opacity" in style_override:
+                kwargs["alpha"] = style_override["opacity"]
+            if "pointRadius" in style_override:
+                kwargs["markersize"] = style_override["pointRadius"]
+
+        if geom_base == "LineString" and "facecolor" in kwargs:
+            del kwargs["facecolor"]
+
+        return kwargs
+
     def _render_tile(self, z, x, y):
         wm_bounds = mercantile.xy_bounds(x, y, z)
         bbox_polygon = box(wm_bounds.left, wm_bounds.bottom, wm_bounds.right, wm_bounds.top)
-        
+
         possible_matches = list(self.sindex.intersection(bbox_polygon.bounds))
         if not possible_matches: return
-        
+
         gdf_tile = self.gdf.iloc[possible_matches]
         gdf_tile = gdf_tile[gdf_tile.intersects(bbox_polygon)]
-        
+
+        if gdf_tile.empty: return
+
+        gdf_tile = gdf_tile[gdf_tile.geometry.notna()]
         if gdf_tile.empty: return
 
         fig, ax = plt.subplots(figsize=(2.56, 2.56), dpi=100)
         ax.set_axis_off()
         ax.set_xlim(wm_bounds.left, wm_bounds.right)
         ax.set_ylim(wm_bounds.bottom, wm_bounds.top)
-        
-        # Simple red styling for now, can be parameterized later
-        gdf_tile.plot(ax=ax, facecolor='red', edgecolor='black', linewidth=0.5)
-        
+
+        for geom_base, group in gdf_tile.groupby(gdf_tile.geom_type.str.replace("Multi", "", regex=False)):
+            group.plot(ax=ax, **self._get_plot_kwargs(geom_base))
+
         folder_path = self.output_dir / str(z) / str(x)
         folder_path.mkdir(parents=True, exist_ok=True)
         file_path = folder_path / f"{y}.png"
-        
+
         plt.savefig(file_path, format='png', bbox_inches='tight', pad_inches=0, transparent=True)
         plt.close(fig)
+
 
 class MVTTiler:
     def __init__(self, source_path: str, output_dir: Path, layer_name: str = "default", min_zoom: int = 0, max_zoom: int = 14):
@@ -202,6 +251,7 @@ class MVTTiler:
         except Exception as e:
             print(f"Failed to write MVT tile {z}/{x}/{y}: {str(e)}")
 
+
 class RasterTiler:
     def __init__(self, source_path: str, output_dir: Path, min_zoom=0, max_zoom=None):
         self.source_path = source_path
@@ -281,9 +331,10 @@ class RasterTiler:
         
         img.save(file_path)
 
+
 class TilingService:
     @staticmethod
-    def process_tiling(task_type: str, source_path: Path, layer_id: str, output_format: str = "raster") -> Optional[Tuple[float, float, float, float]]:
+    def process_tiling(task_type: str, source_path: Path, layer_id: str, output_format: str = "raster", style: Optional[Dict] = None) -> Optional[Tuple[float, float, float, float]]:
         output_dir = settings.TILES_DIR / layer_id
 
         try:
@@ -293,7 +344,7 @@ class TilingService:
                 tiler.load_data()
                 bounds = tiler.generate()
             elif task_type == 'vector':
-                tiler = VectorTiler(str(source_path), output_dir)
+                tiler = VectorTiler(str(source_path), output_dir, style=style)
                 tiler.load_data()
                 bounds = tiler.generate()
             elif task_type == 'raster':
