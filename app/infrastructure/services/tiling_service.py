@@ -7,7 +7,7 @@ import geopandas as gpd
 import mercantile
 from shapely.geometry import box
 from pathlib import Path
-from typing import Union, Dict, Optional, Tuple
+from typing import Union, Dict, Optional, Tuple, Callable
 import rasterio
 from rasterio.warp import calculate_default_transform, reproject, Resampling, transform_bounds
 from rasterio.transform import from_bounds
@@ -19,6 +19,16 @@ import mapbox_vector_tile
 
 from app.core.config import settings
 from app.core.exceptions import TilingProcessError
+
+
+def _count_tiles_total(west: float, south: float, east: float, north: float,
+                       min_zoom: int, max_zoom: int) -> int:
+    """Count total tiles across all zoom levels."""
+    return sum(
+        len(list(mercantile.tiles(west, south, east, north, [z])))
+        for z in range(min_zoom, max_zoom + 1)
+    )
+
 
 class VectorTiler:
     def __init__(self, source_path: str, output_dir: Path, min_zoom=0, max_zoom=None, style: Optional[Dict] = None):
@@ -42,7 +52,7 @@ class VectorTiler:
         except Exception as e:
             raise TilingProcessError(f"Failed to load vector data: {str(e)}")
 
-    def generate(self) -> Tuple[float, float, float, float]:
+    def generate(self, progress_callback: Optional[Callable[[dict], None]] = None) -> Tuple[float, float, float, float]:
         if self.gdf is None: self.load_data()
 
         print("Starting Vector Tile Generation...")
@@ -54,6 +64,10 @@ class VectorTiler:
         bounds_gdf = gpd.GeoSeries([box(minx, miny, maxx, maxy)], crs="EPSG:3857").to_crs("EPSG:4326")
         b = bounds_gdf.total_bounds # minx, miny, maxx, maxy (lng, lat)
 
+        tiles_total = _count_tiles_total(b[0], b[1], b[2], b[3], self.min_zoom, self.max_zoom)
+        tiles_done = 0
+        call_every = max(1, tiles_total // 20)
+
         for z in range(self.min_zoom, self.max_zoom + 1):
             tiles_bounds = list(mercantile.tiles(b[0], b[1], b[2], b[3], [z]))
 
@@ -63,6 +77,22 @@ class VectorTiler:
 
             for tile in tiles_bounds:
                 self._render_tile(tile.z, tile.x, tile.y)
+                tiles_done += 1
+                if progress_callback and tiles_done % call_every == 0:
+                    progress_callback({
+                        "percent": min(99, round(tiles_done * 100 / tiles_total)),
+                        "tiles_done": tiles_done,
+                        "tiles_total": tiles_total,
+                        "current_zoom": z,
+                    })
+
+            if progress_callback:
+                progress_callback({
+                    "percent": min(99, round(tiles_done * 100 / tiles_total)),
+                    "tiles_done": tiles_done,
+                    "tiles_total": tiles_total,
+                    "current_zoom": z,
+                })
 
         return (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
 
@@ -176,7 +206,7 @@ class MVTTiler:
                 sanitized[key] = str(val)
         return sanitized
 
-    def generate(self) -> Tuple[float, float, float, float]:
+    def generate(self, progress_callback: Optional[Callable[[dict], None]] = None) -> Tuple[float, float, float, float]:
         if self.gdf is None:
             self.load_data()
 
@@ -184,6 +214,10 @@ class MVTTiler:
         minx, miny, maxx, maxy = self.gdf.total_bounds
         bounds_gdf = gpd.GeoSeries([box(minx, miny, maxx, maxy)], crs="EPSG:3857").to_crs("EPSG:4326")
         b = bounds_gdf.total_bounds
+
+        tiles_total = _count_tiles_total(b[0], b[1], b[2], b[3], self.min_zoom, self.max_zoom)
+        tiles_done = 0
+        call_every = max(1, tiles_total // 20)
 
         for z in range(self.min_zoom, self.max_zoom + 1):
             tiles_bounds = list(mercantile.tiles(b[0], b[1], b[2], b[3], [z]))
@@ -195,6 +229,22 @@ class MVTTiler:
 
             for tile in tiles_bounds:
                 self._encode_tile(tile.z, tile.x, tile.y)
+                tiles_done += 1
+                if progress_callback and tiles_done % call_every == 0:
+                    progress_callback({
+                        "percent": min(99, round(tiles_done * 100 / tiles_total)),
+                        "tiles_done": tiles_done,
+                        "tiles_total": tiles_total,
+                        "current_zoom": z,
+                    })
+
+            if progress_callback:
+                progress_callback({
+                    "percent": min(99, round(tiles_done * 100 / tiles_total)),
+                    "tiles_done": tiles_done,
+                    "tiles_total": tiles_total,
+                    "current_zoom": z,
+                })
 
         return (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
 
@@ -273,7 +323,7 @@ class RasterTiler:
         # Jangan terlalu jauh (limit ke 20 agar tidak overload disk)
         return min(max(detected_zoom, 0), 20)
 
-    def generate(self) -> Tuple[float, float, float, float]:
+    def generate(self, progress_callback: Optional[Callable[[dict], None]] = None) -> Tuple[float, float, float, float]:
         try:
             with rasterio.open(self.source_path) as src:
                 if self.max_zoom is None:
@@ -286,11 +336,31 @@ class RasterTiler:
                 else:
                     min_lon, min_lat, max_lon, max_lat = src.bounds.left, src.bounds.bottom, src.bounds.right, src.bounds.top
 
+                tiles_total = _count_tiles_total(min_lon, min_lat, max_lon, max_lat, self.min_zoom, self.max_zoom)
+                tiles_done = 0
+                call_every = max(1, tiles_total // 20)
+
                 for z in range(self.min_zoom, self.max_zoom + 1):
                     tiles = list(mercantile.tiles(min_lon, min_lat, max_lon, max_lat, [z]))
 
                     for t in tiles:
                         self._render_tile(src, t.z, t.x, t.y)
+                        tiles_done += 1
+                        if progress_callback and tiles_done % call_every == 0:
+                            progress_callback({
+                                "percent": min(99, round(tiles_done * 100 / tiles_total)),
+                                "tiles_done": tiles_done,
+                                "tiles_total": tiles_total,
+                                "current_zoom": z,
+                            })
+
+                    if progress_callback:
+                        progress_callback({
+                            "percent": min(99, round(tiles_done * 100 / tiles_total)),
+                            "tiles_done": tiles_done,
+                            "tiles_total": tiles_total,
+                            "current_zoom": z,
+                        })
 
                 return (float(min_lon), float(min_lat), float(max_lon), float(max_lat))
         except Exception as e:
@@ -334,7 +404,7 @@ class RasterTiler:
 
 class TilingService:
     @staticmethod
-    def process_tiling(task_type: str, source_path: Path, layer_id: str, output_format: str = "raster", style: Optional[Dict] = None) -> Optional[Tuple[float, float, float, float]]:
+    def process_tiling(task_type: str, source_path: Path, layer_id: str, output_format: str = "raster", style: Optional[Dict] = None, progress_callback: Optional[Callable[[dict], None]] = None) -> Optional[Tuple[float, float, float, float]]:
         output_dir = settings.TILES_DIR / layer_id
 
         try:
@@ -342,14 +412,14 @@ class TilingService:
             if task_type == 'vector' and output_format == 'mvt':
                 tiler = MVTTiler(str(source_path), output_dir, layer_name=layer_id)
                 tiler.load_data()
-                bounds = tiler.generate()
+                bounds = tiler.generate(progress_callback=progress_callback)
             elif task_type == 'vector':
                 tiler = VectorTiler(str(source_path), output_dir, style=style)
                 tiler.load_data()
-                bounds = tiler.generate()
+                bounds = tiler.generate(progress_callback=progress_callback)
             elif task_type == 'raster':
                 tiler = RasterTiler(str(source_path), output_dir)
-                bounds = tiler.generate()
+                bounds = tiler.generate(progress_callback=progress_callback)
             else:
                 raise ValueError("Unknown task type")
 

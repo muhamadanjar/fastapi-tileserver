@@ -3,10 +3,11 @@ from typing import Optional
 
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import attributes
+from sqlalchemy.orm import attributes as _sa_attrs
 from sqlmodel import Session
 
 from app.domain.models import UploadSession, Layer, JobStatus
+from sqlalchemy.orm import attributes
 from app.core.exceptions import SessionNotFoundError
 
 
@@ -26,11 +27,32 @@ class UploadSessionRepository:
         )
         return result.scalars().first()
 
-    async def update_received_bytes(self, upload_id: str, received_bytes: int) -> None:
+    async def update_chunk_map(
+        self,
+        upload_id: str,
+        chunk_index: int,
+        chunk_bytes: int,
+        uploaded_chunks: int,
+        received_bytes: int,
+    ) -> None:
         session_obj = await self.get_by_id(upload_id)
         if session_obj:
+            cm = dict(session_obj.chunk_map or {})
+            cm[str(chunk_index)] = chunk_bytes
+            session_obj.chunk_map = cm
+            attributes.flag_modified(session_obj, "chunk_map")
+            session_obj.uploaded_chunks = uploaded_chunks
             session_obj.received_bytes = received_bytes
-            session_obj.updated_at = datetime.utcnow()
+            session_obj.status = JobStatus.uploading
+            session_obj.updated_at = datetime.now(timezone.utc)
+            self.session.add(session_obj)
+            await self.session.commit()
+
+    async def mark_expired(self, upload_id: str) -> None:
+        session_obj = await self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.status = JobStatus.expired
+            session_obj.updated_at = datetime.now(timezone.utc)
             self.session.add(session_obj)
             await self.session.commit()
 
@@ -96,6 +118,17 @@ class SyncLayerRepository:
         self.session.commit()
         self.session.refresh(layer)
         return layer
+
+    def update_progress(self, layer_id: str, progress: dict) -> None:
+        layer = self.get_by_id(layer_id)
+        if layer:
+            existing = dict(layer.file_metadata or {})
+            existing["progress"] = progress
+            layer.file_metadata = existing
+            _sa_attrs.flag_modified(layer, "file_metadata")
+            layer.updated_at = datetime.now(timezone.utc)
+            self.session.add(layer)
+            self.session.commit()
 
 
 class LayerRepository:

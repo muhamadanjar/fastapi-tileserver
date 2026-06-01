@@ -30,6 +30,12 @@ class SessionAlreadyCompleteError(TileServerException):
         super().__init__(self.message)
 
 
+class SessionExpiredError(TileServerException):
+    def __init__(self, upload_id: str):
+        self.message = f"Upload session '{upload_id}' has expired."
+        super().__init__(self.message)
+
+
 class ChunkUploadError(TileServerException):
     def __init__(self, detail: str):
         self.message = f"Chunk upload error: {detail}"

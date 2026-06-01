@@ -1,8 +1,12 @@
-import math
-from pathlib import Path
+from datetime import datetime, timezone
 
 from app.core.config import settings
-from app.core.exceptions import ChunkUploadError, SessionAlreadyCompleteError, SessionNotFoundError
+from app.core.exceptions import (
+    ChunkUploadError,
+    SessionAlreadyCompleteError,
+    SessionNotFoundError,
+    SessionExpiredError,
+)
 from app.domain.models import JobStatus
 from app.domain.schemas import ChunkUploadResponse
 from app.infrastructure.db.repository import UploadSessionRepository
@@ -18,9 +22,7 @@ class ReceiveChunkUseCase:
     async def execute(
         self,
         upload_id: str,
-        range_start: int,
-        range_end: int,
-        total_size: int,
+        chunk_index: int,
         chunk_data: bytes,
     ) -> ChunkUploadResponse:
         session = await self.repo.get_by_id(upload_id)
@@ -30,32 +32,45 @@ class ReceiveChunkUseCase:
         if session.status in (JobStatus.done, JobStatus.processing):
             raise SessionAlreadyCompleteError(upload_id)
 
-        actual_chunk_size = range_end - range_start + 1
-        if len(chunk_data) != actual_chunk_size:
+        if session.status == JobStatus.expired:
+            raise SessionExpiredError(upload_id)
+
+        if session.expires_at and session.expires_at <= datetime.now(timezone.utc):
+            await self.repo.mark_expired(upload_id)
+            raise SessionExpiredError(upload_id)
+
+        start = chunk_index * session.chunk_size
+        end = min(start + session.chunk_size, session.total_size)
+        expected_size = end - start
+
+        if len(chunk_data) != expected_size:
             raise ChunkUploadError(
-                f"Chunk body size {len(chunk_data)} does not match "
-                f"Content-Range {range_start}-{range_end}."
+                f"Chunk {chunk_index}: expected {expected_size} bytes, got {len(chunk_data)}."
             )
 
-        chunk_index = range_start // settings.CHUNK_UPLOAD_THRESHOLD
-        storage = ChunkStorage(upload_id)
-        storage.write_chunk(chunk_index, chunk_data)
+        storage = ChunkStorage()
+        storage.write_chunk(upload_id, chunk_data, start)
 
-        new_received = range_end + 1
-        await self.repo.update_received_bytes(upload_id, new_received)
+        new_chunk_map = dict(session.chunk_map or {})
+        new_chunk_map[str(chunk_index)] = len(chunk_data)
+        new_uploaded_chunks = len(new_chunk_map)
+        new_received_bytes = sum(new_chunk_map.values())
 
-        is_complete = new_received >= total_size
+        await self.repo.update_chunk_map(
+            upload_id, chunk_index, len(chunk_data), new_uploaded_chunks, new_received_bytes
+        )
+
+        is_complete = new_uploaded_chunks >= session.total_chunks
 
         if is_complete:
-            part_count = math.ceil(total_size / settings.CHUNK_UPLOAD_THRESHOLD)
             unique_name = FileService.get_unique_filename(session.filename)
             assembled_path = settings.UPLOAD_DIR / unique_name
 
             try:
-                storage.assemble(assembled_path, part_count)
+                storage.assemble_chunks(upload_id, assembled_path)
                 source_path, _ = FileService.prepare_source_path(assembled_path)
             except Exception as exc:
-                storage.cleanup()
+                storage.cleanup_chunks(upload_id)
                 await self.repo.set_status(upload_id, JobStatus.failed, str(exc))
                 raise ChunkUploadError(f"Assembly failed: {exc}") from exc
 
@@ -68,6 +83,8 @@ class ReceiveChunkUseCase:
                 output_format=session.output_format,
             )
 
+        progress_percent = round(new_uploaded_chunks / session.total_chunks * 100, 2)
+
         tile_url = None
         if is_complete:
             if session.output_format == "mvt":
@@ -77,8 +94,11 @@ class ReceiveChunkUseCase:
 
         return ChunkUploadResponse(
             upload_id=upload_id,
-            received_bytes=new_received,
-            total_size=total_size,
+            received_bytes=new_received_bytes,
+            total_size=session.total_size,
+            uploaded_chunks=new_uploaded_chunks,
+            total_chunks=session.total_chunks,
+            progress_percent=progress_percent,
             is_complete=is_complete,
             layer_id=session.layer_id if is_complete else None,
             tile_url_template=tile_url,

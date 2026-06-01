@@ -9,6 +9,31 @@ from app.domain.models import JobStatus, Layer
 from app.core.utils import slugify
 
 
+def _make_progress_callback(layer_id: str):
+    state = {"last": None}
+
+    def callback(progress: dict) -> None:
+        state["last"] = progress
+        try:
+            with db.get_session() as session:
+                SyncLayerRepository(session).update_progress(layer_id, progress)
+        except Exception as exc:
+            print(f"[progress] Failed to write progress for {layer_id}: {exc}")
+
+    def finalize() -> None:
+        last = state["last"]
+        if last:
+            try:
+                with db.get_session() as session:
+                    SyncLayerRepository(session).update_progress(
+                        layer_id, {**last, "percent": 100}
+                    )
+            except Exception as exc:
+                print(f"[progress] Failed to finalize progress for {layer_id}: {exc}")
+
+    return callback, finalize
+
+
 @celery_app.task(bind=True, max_retries=3)
 def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, source_path: str, output_format: str = "raster"):
     with db.get_session() as session:
@@ -23,7 +48,9 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
             if existing and existing.file_metadata:
                 style = existing.file_metadata.get("style")
 
-        bounds = TilingService.process_tiling(file_type, Path(source_path), layer_id, output_format=output_format, style=style)
+        progress_cb, finalize_progress = _make_progress_callback(layer_id)
+        bounds = TilingService.process_tiling(file_type, Path(source_path), layer_id, output_format=output_format, style=style, progress_callback=progress_cb)
+        finalize_progress()
         with db.get_session() as session:
             upload_repo = SyncUploadSessionRepository(session)
             upload_repo.set_status(upload_id, JobStatus.done)

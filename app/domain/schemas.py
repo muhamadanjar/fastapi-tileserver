@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict
 from datetime import datetime
 
 
@@ -34,12 +34,16 @@ class UploadInitResponse(BaseModel):
     layer_id: str
     message: str
     chunk_size: int
+    total_chunks: int
 
 
 class ChunkUploadResponse(BaseModel):
     upload_id: str
     received_bytes: int
     total_size: int
+    uploaded_chunks: int
+    total_chunks: int
+    progress_percent: float
     is_complete: bool
     layer_id: Optional[str] = None
     tile_url_template: Optional[str] = None
@@ -51,6 +55,10 @@ class JobStatusResponse(BaseModel):
     status: str
     received_bytes: int
     total_size: int
+    uploaded_chunks: int = 0
+    total_chunks: int = 0
+    progress_percent: float = 0.0
+    chunk_map: Optional[Dict[str, int]] = None
     error_message: Optional[str] = None
     tile_url_template: Optional[str] = None
     bbox: Optional[list[float]] = None

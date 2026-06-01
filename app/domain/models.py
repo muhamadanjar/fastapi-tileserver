@@ -7,9 +7,12 @@ from sqlmodel import SQLModel, Field, Column, JSON
 
 class JobStatus(str, enum.Enum):
     pending = "pending"
+    uploading = "uploading"
+    paused = "paused"
     processing = "processing"
     done = "done"
     failed = "failed"
+    expired = "expired"
 
 class LayerType(str, enum.Enum):
     tile = "tile"
@@ -40,6 +43,11 @@ class UploadSession(SQLModel, table=True):
     error_message: Optional[str] = Field(default=None)
     final_path: Optional[str] = Field(default=None)
     output_format: str = Field(default="raster")
+    chunk_map: Optional[Dict[str, int]] = Field(default_factory=dict, sa_column=Column(JSON))
+    total_chunks: int = Field(default=0)
+    uploaded_chunks: int = Field(default=0)
+    chunk_size: int = Field(default=0)
+    expires_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
 

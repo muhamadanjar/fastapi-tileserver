@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.exceptions import (
     ChunkUploadError,
     SessionAlreadyCompleteError,
     SessionNotFoundError,
+    SessionExpiredError,
     UnsupportedFileFormatException,
 )
 from app.domain.schemas import (
@@ -39,39 +40,32 @@ async def init_upload(
     return UploadInitResponse(
         upload_id=session.id,
         layer_id=session.layer_id,
-        message="Chunked upload session created. Send chunks via PATCH /uploads/{upload_id}.",
+        message="Chunked upload session created. Send chunks via POST /uploads/{upload_id}/{chunk_index}.",
         chunk_size=settings.CHUNK_UPLOAD_THRESHOLD,
+        total_chunks=session.total_chunks,
     )
 
 
-@router.patch("/{upload_id}", response_model=ChunkUploadResponse)
+@router.post("/{upload_id}/{chunk_index}", response_model=ChunkUploadResponse)
 async def receive_chunk(
     upload_id: str,
+    chunk_index: int,
     request: Request,
-    content_range: str = Header(..., alias="Content-Range"),
     repo: UploadSessionRepository = Depends(_get_repo),
 ):
-    try:
-        range_part, total_str = content_range.replace("bytes ", "").split("/")
-        start_str, end_str = range_part.split("-")
-        range_start, range_end, total_size = int(start_str), int(end_str), int(total_str)
-    except (ValueError, AttributeError):
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid Content-Range header. Expected: bytes <start>-<end>/<total>",
-        )
-
     chunk_data = await request.body()
     if not chunk_data:
         raise HTTPException(status_code=400, detail="Empty request body.")
 
     try:
         use_case = ReceiveChunkUseCase(repo)
-        return await use_case.execute(upload_id, range_start, range_end, total_size, chunk_data)
+        return await use_case.execute(upload_id, chunk_index, chunk_data)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=exc.message)
     except SessionAlreadyCompleteError as exc:
         raise HTTPException(status_code=409, detail=exc.message)
+    except SessionExpiredError as exc:
+        raise HTTPException(status_code=410, detail=exc.message)
     except ChunkUploadError as exc:
         raise HTTPException(status_code=400, detail=exc.message)
 
@@ -100,12 +94,19 @@ async def get_upload_status(
         if layer and layer.bbox_west is not None:
             bbox = [layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]
 
+    progress_percent = round(session.uploaded_chunks / session.total_chunks * 100, 2) if session.total_chunks else 0.0
+    chunk_map = session.chunk_map if session.status == "uploading" else None
+
     return JobStatusResponse(
         upload_id=session.id,
         layer_id=session.layer_id,
         status=session.status,
         received_bytes=session.received_bytes,
         total_size=session.total_size,
+        uploaded_chunks=session.uploaded_chunks,
+        total_chunks=session.total_chunks,
+        progress_percent=progress_percent,
+        chunk_map=chunk_map,
         error_message=session.error_message,
         tile_url_template=tile_url,
         bbox=bbox,

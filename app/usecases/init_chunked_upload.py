@@ -1,4 +1,6 @@
+import math
 import uuid
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from app.core.config import settings
@@ -17,9 +19,12 @@ class InitChunkedUploadUseCase:
 
         upload_id = str(uuid.uuid4())
         layer_id = str(uuid.uuid4())
-        unique_name = FileService.get_unique_filename(filename)
 
-        ChunkStorage(upload_id).ensure_dir()
+        chunk_size = settings.CHUNK_UPLOAD_THRESHOLD
+        total_chunks = math.ceil(total_size / chunk_size)
+        expires_at = datetime.now(timezone.utc) + timedelta(hours=settings.UPLOAD_SESSION_EXPIRE_HOURS)
+
+        ChunkStorage().ensure_dir(upload_id)
 
         session = UploadSession(
             id=upload_id,
@@ -30,5 +35,10 @@ class InitChunkedUploadUseCase:
             received_bytes=0,
             status=JobStatus.pending,
             output_format=output_format,
+            chunk_map={},
+            total_chunks=total_chunks,
+            uploaded_chunks=0,
+            chunk_size=chunk_size,
+            expires_at=expires_at,
         )
         return await self.repo.create(session)

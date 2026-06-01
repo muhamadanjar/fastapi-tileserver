@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Chunked upload threshold in bytes (default 10 MB)
     CHUNK_UPLOAD_THRESHOLD: int = 10_485_760
 
+    # Upload session expiry in hours (default 24)
+    UPLOAD_SESSION_EXPIRE_HOURS: int = Field(default=24, env="UPLOAD_SESSION_EXPIRE_HOURS")
+
     # CORS
     CORS_ALLOWED_ORIGINS: str = Field(default="*", env="CORS_ALLOWED_ORIGINS")
     CORS_ALLOWED_METHODS: str = Field(default="*", env="CORS_ALLOWED_METHODS")
