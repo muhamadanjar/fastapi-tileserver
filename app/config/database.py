@@ -1,8 +1,11 @@
 from typing import Optional, Dict, Any
+from pathlib import Path
 from urllib.parse import quote_plus
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 class DatabaseSettings(BaseSettings):
@@ -43,7 +46,7 @@ class DatabaseSettings(BaseSettings):
     debug: bool = Field(default=False)
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_BASE_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,

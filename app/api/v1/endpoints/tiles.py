@@ -23,6 +23,7 @@ def get_process_upload_usecase(
 async def upload_and_tile(
     file: UploadFile = File(...),
     output_format: str = Form("raster"),
+    max_zoom: int = Form(None),
     use_case: ProcessUploadUseCase = Depends(get_process_upload_usecase),
 ):
     if file.size and file.size > settings.CHUNK_UPLOAD_THRESHOLD:
@@ -34,4 +35,4 @@ async def upload_and_tile(
                 "Use chunked upload: POST /api/v1/uploads/init"
             ),
         )
-    return await use_case.execute(file, output_format=output_format)
+    return await use_case.execute(file, output_format=output_format, max_zoom=max_zoom)

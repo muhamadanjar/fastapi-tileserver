@@ -43,6 +43,7 @@ class UploadSession(SQLModel, table=True):
     error_message: Optional[str] = Field(default=None)
     final_path: Optional[str] = Field(default=None)
     output_format: str = Field(default="raster")
+    max_zoom: Optional[int] = Field(default=None)
     chunk_map: Optional[Dict[str, int]] = Field(default_factory=dict, sa_column=Column(JSON))
     total_chunks: int = Field(default=0)
     uploaded_chunks: int = Field(default=0)

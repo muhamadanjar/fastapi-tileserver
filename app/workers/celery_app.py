@@ -1,4 +1,5 @@
 from celery import Celery
+from kombu import Queue
 from app.core.config import settings
 
 celery_app = Celery(
@@ -14,6 +15,9 @@ celery_app.conf.update(
     result_serializer="json",
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    task_reject_on_worker_lost=True,
+    task_queues=[Queue('celery', durable=True)],
+    task_default_queue='celery',
     # Use pika as RabbitMQ client
     broker_connection_retry_on_startup=True,
     broker_connection_retry=True,

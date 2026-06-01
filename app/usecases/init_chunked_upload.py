@@ -14,7 +14,7 @@ class InitChunkedUploadUseCase:
     def __init__(self, repo: UploadSessionRepository):
         self.repo = repo
 
-    async def execute(self, filename: str, total_size: int, output_format: str = "raster") -> UploadSession:
+    async def execute(self, filename: str, total_size: int, output_format: str = "raster", max_zoom: int = None) -> UploadSession:
         file_type = FileService.allowed_file(filename)
 
         upload_id = str(uuid.uuid4())
@@ -35,6 +35,7 @@ class InitChunkedUploadUseCase:
             received_bytes=0,
             status=JobStatus.pending,
             output_format=output_format,
+            max_zoom=max_zoom,
             chunk_map={},
             total_chunks=total_chunks,
             uploaded_chunks=0,

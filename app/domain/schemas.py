@@ -27,6 +27,7 @@ class UploadInitRequest(BaseModel):
     filename: str
     total_size: int
     output_format: str = "raster"
+    max_zoom: Optional[int] = None
 
 
 class UploadInitResponse(BaseModel):

@@ -1,3 +1,4 @@
+from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.exceptions import (
@@ -18,6 +19,7 @@ from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import UploadSessionRepository, LayerRepository
 from app.usecases.init_chunked_upload import InitChunkedUploadUseCase
 from app.usecases.receive_chunk import ReceiveChunkUseCase
+from app.workers.tasks import process_tiling_task
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
@@ -33,7 +35,7 @@ async def init_upload(
 ):
     try:
         use_case = InitChunkedUploadUseCase(repo)
-        session = await use_case.execute(body.filename, body.total_size, body.output_format)
+        session = await use_case.execute(body.filename, body.total_size, body.output_format, body.max_zoom)
     except UnsupportedFileFormatException as exc:
         raise HTTPException(status_code=415, detail=exc.message)
 
@@ -111,3 +113,27 @@ async def get_upload_status(
         tile_url_template=tile_url,
         bbox=bbox,
     )
+
+
+@router.post("/{upload_id}/retry")
+async def retry_tiling(
+    upload_id: str,
+    repo: UploadSessionRepository = Depends(_get_repo),
+):
+    session = await repo.get_by_id(upload_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+    if session.status not in ("pending", "failed"):
+        raise HTTPException(status_code=409, detail=f"Cannot retry session with status '{session.status}'")
+    if not session.final_path or not Path(session.final_path).exists():
+        raise HTTPException(status_code=404, detail="Source file missing from disk")
+
+    process_tiling_task.delay(
+        upload_id=upload_id,
+        layer_id=session.layer_id,
+        file_type=session.file_type,
+        source_path=session.final_path,
+        output_format=session.output_format,
+        max_zoom=session.max_zoom,
+    )
+    return {"message": "Tiling re-queued", "upload_id": upload_id, "layer_id": session.layer_id}

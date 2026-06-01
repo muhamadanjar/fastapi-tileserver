@@ -18,7 +18,7 @@ class ProcessUploadUseCase:
         self.file_service = file_service
         self.repo = repo
 
-    async def execute(self, file: UploadFile, output_format: str = "raster") -> TilingJobResponse:
+    async def execute(self, file: UploadFile, output_format: str = "raster", max_zoom: int = None) -> TilingJobResponse:
         source_path, file_type = await self.file_service.save_upload(file)
         layer_id = str(uuid.uuid4())
         upload_id = str(uuid.uuid4())
@@ -33,6 +33,7 @@ class ProcessUploadUseCase:
             status=JobStatus.pending,
             final_path=str(source_path),
             output_format=output_format,
+            max_zoom=max_zoom,
         )
         await self.repo.create(session)
 
@@ -42,6 +43,7 @@ class ProcessUploadUseCase:
             file_type=file_type,
             source_path=str(source_path),
             output_format=output_format,
+            max_zoom=max_zoom,
         )
 
         if output_format == "mvt":

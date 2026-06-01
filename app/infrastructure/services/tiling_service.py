@@ -35,7 +35,7 @@ class VectorTiler:
         self.source_path = source_path
         self.output_dir = output_dir
         self.min_zoom = min_zoom
-        self.max_zoom = max_zoom or 18 # Default ke 18 untuk vector jika tidak diatur
+        self.max_zoom = max_zoom
         self.gdf = None
         self.sindex = None
         self.style = style
@@ -44,16 +44,40 @@ class VectorTiler:
         try:
             print(f"Loading Vector Data from: {self.source_path}")
             self.gdf = gpd.read_file(self.source_path)
-            
+
             if self.gdf.crs != "EPSG:3857":
                 self.gdf = self.gdf.to_crs(epsg=3857)
-                
+
             self.sindex = self.gdf.sindex
         except Exception as e:
             raise TilingProcessError(f"Failed to load vector data: {str(e)}")
 
+    def _calculate_max_zoom(self) -> int:
+        initial_resolution = 156543.03392
+
+        geom_type = self.gdf.geom_type.iloc[0].replace("Multi", "")
+        if geom_type == "Point":
+            return 18
+
+        areas = self.gdf.geometry.area
+        non_zero = areas[areas > 0]
+
+        if non_zero.empty:
+            return 18
+
+        min_dim = math.sqrt(non_zero.min())
+        if min_dim <= 0:
+            return 18
+
+        detected = math.ceil(math.log2(initial_resolution / min_dim))
+        return min(max(detected, 10), 19)
+
     def generate(self, progress_callback: Optional[Callable[[dict], None]] = None) -> Tuple[float, float, float, float]:
         if self.gdf is None: self.load_data()
+
+        if self.max_zoom is None:
+            self.max_zoom = self._calculate_max_zoom()
+            print(f"Detected optimal Max Zoom for Vector: {self.max_zoom}")
 
         print("Starting Vector Tile Generation...")
         print(f"{self.source_path}")
@@ -172,7 +196,7 @@ class VectorTiler:
 
 
 class MVTTiler:
-    def __init__(self, source_path: str, output_dir: Path, layer_name: str = "default", min_zoom: int = 0, max_zoom: int = 14):
+    def __init__(self, source_path: str, output_dir: Path, layer_name: str = "default", min_zoom: int = 0, max_zoom: Optional[int] = None):
         self.source_path = source_path
         self.output_dir = output_dir
         self.layer_name = layer_name
@@ -193,6 +217,26 @@ class MVTTiler:
         except Exception as e:
             raise TilingProcessError(f"Failed to load vector data for MVT: {str(e)}")
 
+    def _calculate_max_zoom(self) -> int:
+        initial_resolution = 156543.03392
+
+        geom_type = self.gdf.geom_type.iloc[0].replace("Multi", "")
+        if geom_type == "Point":
+            return 18
+
+        areas = self.gdf.geometry.area
+        non_zero = areas[areas > 0]
+
+        if non_zero.empty:
+            return 18
+
+        min_dim = math.sqrt(non_zero.min())
+        if min_dim <= 0:
+            return 18
+
+        detected = math.ceil(math.log2(initial_resolution / min_dim))
+        return min(max(detected, 10), 19)
+
     def _sanitize_properties(self, row: pd.Series) -> dict:
         sanitized = {}
         for key, val in row.items():
@@ -209,6 +253,10 @@ class MVTTiler:
     def generate(self, progress_callback: Optional[Callable[[dict], None]] = None) -> Tuple[float, float, float, float]:
         if self.gdf is None:
             self.load_data()
+
+        if self.max_zoom is None:
+            self.max_zoom = self._calculate_max_zoom()
+            print(f"Detected optimal Max Zoom for MVT: {self.max_zoom}")
 
         print("Starting MVT Tile Generation...")
         minx, miny, maxx, maxy = self.gdf.total_bounds
@@ -404,21 +452,21 @@ class RasterTiler:
 
 class TilingService:
     @staticmethod
-    def process_tiling(task_type: str, source_path: Path, layer_id: str, output_format: str = "raster", style: Optional[Dict] = None, progress_callback: Optional[Callable[[dict], None]] = None) -> Optional[Tuple[float, float, float, float]]:
+    def process_tiling(task_type: str, source_path: Path, layer_id: str, output_format: str = "raster", style: Optional[Dict] = None, progress_callback: Optional[Callable[[dict], None]] = None, max_zoom: Optional[int] = None) -> Optional[Tuple[float, float, float, float]]:
         output_dir = settings.TILES_DIR / layer_id
 
         try:
             bounds = None
             if task_type == 'vector' and output_format == 'mvt':
-                tiler = MVTTiler(str(source_path), output_dir, layer_name=layer_id)
+                tiler = MVTTiler(str(source_path), output_dir, layer_name=layer_id, max_zoom=max_zoom)
                 tiler.load_data()
                 bounds = tiler.generate(progress_callback=progress_callback)
             elif task_type == 'vector':
-                tiler = VectorTiler(str(source_path), output_dir, style=style)
+                tiler = VectorTiler(str(source_path), output_dir, style=style, max_zoom=max_zoom)
                 tiler.load_data()
                 bounds = tiler.generate(progress_callback=progress_callback)
             elif task_type == 'raster':
-                tiler = RasterTiler(str(source_path), output_dir)
+                tiler = RasterTiler(str(source_path), output_dir, max_zoom=max_zoom)
                 bounds = tiler.generate(progress_callback=progress_callback)
             else:
                 raise ValueError("Unknown task type")

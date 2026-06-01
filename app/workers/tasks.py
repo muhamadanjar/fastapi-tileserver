@@ -35,7 +35,7 @@ def _make_progress_callback(layer_id: str):
 
 
 @celery_app.task(bind=True, max_retries=3)
-def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, source_path: str, output_format: str = "raster"):
+def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, source_path: str, output_format: str = "raster", max_zoom: int = None):
     with db.get_session() as session:
         repo = SyncUploadSessionRepository(session)
         repo.set_status(upload_id, JobStatus.processing)
@@ -49,7 +49,7 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
                 style = existing.file_metadata.get("style")
 
         progress_cb, finalize_progress = _make_progress_callback(layer_id)
-        bounds = TilingService.process_tiling(file_type, Path(source_path), layer_id, output_format=output_format, style=style, progress_callback=progress_cb)
+        bounds = TilingService.process_tiling(file_type, Path(source_path), layer_id, output_format=output_format, style=style, progress_callback=progress_cb, max_zoom=max_zoom)
         finalize_progress()
         with db.get_session() as session:
             upload_repo = SyncUploadSessionRepository(session)

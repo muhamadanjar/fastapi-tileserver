@@ -81,6 +81,7 @@ class ReceiveChunkUseCase:
                 file_type=session.file_type,
                 source_path=str(source_path),
                 output_format=session.output_format,
+                max_zoom=session.max_zoom,
             )
 
         progress_percent = round(new_uploaded_chunks / session.total_chunks * 100, 2)
