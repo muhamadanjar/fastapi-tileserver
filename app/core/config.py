@@ -1,19 +1,24 @@
 
 from typing import List, Union
+from functools import lru_cache
 from pydantic import AnyHttpUrl, field_validator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
+from app.config.database import DatabaseSettings
 
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "FastAPI Tileserver"
     API_V1_STR: str = "/api/v1"
-    
+
     # Upload and Data Directories
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
     UPLOAD_DIR: Path = BASE_DIR / "data" / "uploads"
     TILES_DIR: Path = BASE_DIR / "data" / "tiles"
     CHUNKS_DIR: Path = BASE_DIR / "data" / "chunks"
+
+    # Database
+    database: DatabaseSettings = Field(default_factory=DatabaseSettings)
 
     # RabbitMQ
     RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"
@@ -55,7 +60,11 @@ class Settings(BaseSettings):
         env_nested_delimiter="__",
     )
 
-settings = Settings()
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    return Settings()
+
+settings = get_settings()
 
 # Ensure directories exist
 settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
