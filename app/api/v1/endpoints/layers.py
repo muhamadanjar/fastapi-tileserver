@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 import geopandas as gpd
 import rasterio
@@ -12,6 +13,7 @@ from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
 from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_csw
 from app.core.utils import slugify
+from app.core.response import generate_response
 from app.workers.tasks import process_tiling_task
 
 router = APIRouter(prefix="/layers", tags=["layers"])
@@ -25,12 +27,23 @@ def _get_session_repo(session=Depends(get_async_session)) -> UploadSessionReposi
     return UploadSessionRepository(session)
 
 
-@router.get("", response_model=list[LayerResponse])
+@router.get("")
 async def list_layers(
+    skip: int = 0,
+    take: int = 10,
+    page: Optional[int] = None,
     repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
-    layers = await repo.list_all()
+    # Calculate skip based on page if provided
+    if page and page > 1:
+        skip = (page - 1) * take
+
+    # Get paginated layers
+    result = await repo.paginate(skip=skip, limit=take)
+    layers = result["data"]
+    metas = result["metas"]
+
     responses = []
     for layer in layers:
         status = "done"
@@ -51,7 +64,12 @@ async def list_layers(
             bbox=[layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north] if all([layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]) else None,
             # file_metadata=layer.file_metadata,
         ))
-    return responses
+
+    return generate_response(
+        data=responses,
+        metas=metas,
+        message="List layers with pagination"
+    )
 
 
 @router.get("/{layer_id}", response_model=LayerResponse)

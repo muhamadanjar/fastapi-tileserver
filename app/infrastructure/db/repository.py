@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlmodel import select
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes as _sa_attrs
 from sqlmodel import Session
@@ -140,6 +141,35 @@ class LayerRepository:
     async def list_all(self) -> list[Layer]:
         result = await self.session.execute(select(Layer))
         return result.scalars().all()
+
+    async def paginate(self, skip: int = 0, limit: int = 10) -> dict:
+        """Paginate layers. Returns dict with 'data' and 'metas'."""
+        # Get total count
+        count_result = await self.session.execute(select(func.count(Layer.id)))
+        total = count_result.scalar() or 0
+
+        # Get paginated data
+        result = await self.session.execute(
+            select(Layer).offset(skip).limit(limit)
+        )
+        data = result.scalars().all()
+
+        # Calculate pagination metadata
+        page_size = limit
+        current_page = (skip // limit) + 1 if limit > 0 else 1
+        total_pages = (total + limit - 1) // limit if limit > 0 else 1
+
+        return {
+            "data": data,
+            "metas": {
+                "total": total,
+                "page": current_page,
+                "page_size": page_size,
+                "total_pages": total_pages,
+                "has_next": current_page < total_pages,
+                "has_prev": current_page > 1,
+            }
+        }
 
     async def get_by_id(self, layer_id: str) -> Optional[Layer]:
         result = await self.session.execute(
