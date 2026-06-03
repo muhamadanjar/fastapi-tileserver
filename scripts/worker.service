@@ -1,0 +1,21 @@
+[Unit]
+Description=Celery Service
+After=network.target
+
+[Service]
+Type=forking
+User=ubuntu
+Group=ubuntu
+EnvironmentFile=/etc/celery.conf
+# Systemd akan otomatis masuk ke folder ini sebelum menjalankan ExecStart
+WorkingDirectory=/home/user/nama_project_anda
+ExecStart=/bin/sh -c 'cd ${CELERYD_CHDIR} && ${CELERY_BIN} -A ${CELERY_APP} multi start worker \
+  --pidfile=${CELERYD_PID_FILE} --logfile=${CELERYD_LOG_FILE} ${CELERYD_OPTS}'
+ExecStop=/bin/sh -c 'cd ${CELERYD_CHDIR} && ${CELERY_BIN} multi stopwait worker \
+  --pidfile=${CELERYD_PID_FILE}'
+ExecReload=/bin/sh -c 'cd ${CELERYD_CHDIR} && ${CELERY_BIN} multi restart worker \
+  --pidfile=${CELERYD_PID_FILE} --logfile=${CELERYD_LOG_FILE} ${CELERYD_OPTS}'
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
