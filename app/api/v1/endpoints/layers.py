@@ -13,7 +13,7 @@ from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
 from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_csw
 from app.core.utils import slugify
-from app.core.response import generate_response
+from app.core.response import APIResponse
 from app.workers.tasks import process_tiling_task
 
 router = APIRouter(prefix="/layers", tags=["layers"])
@@ -65,10 +65,10 @@ async def list_layers(
             # file_metadata=layer.file_metadata,
         ))
 
-    return generate_response(
+    return APIResponse.success(
+        message="List layers with pagination",
         data=responses,
-        metas=metas,
-        message="List layers with pagination"
+        metas=metas
     )
 
 
