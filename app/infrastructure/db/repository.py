@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlmodel import select
-from sqlalchemy import func
+from sqlalchemy import func, desc, asc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes as _sa_attrs
 from sqlmodel import Session
@@ -142,15 +142,52 @@ class LayerRepository:
         result = await self.session.execute(select(Layer))
         return result.scalars().all()
 
-    async def paginate(self, skip: int = 0, limit: int = 10) -> dict:
-        """Paginate layers. Returns dict with 'data' and 'metas'."""
-        # Get total count
-        count_result = await self.session.execute(select(func.count(Layer.id)))
+    async def paginate(
+        self,
+        skip: int = 0,
+        limit: int = 10,
+        search: Optional[str] = None,
+        sort_field: Optional[str] = None,
+        sort_dir: str = "asc"
+    ) -> dict:
+        """Paginate layers with optional search and sorting. Returns dict with 'data' and 'metas'."""
+        # Build base query
+        query = select(Layer)
+
+        # Apply search filter if provided
+        if search:
+            search_term = f"%{search}%"
+            query = query.where(Layer.filename.ilike(search_term))
+
+        # Apply sorting
+        if sort_field:
+            # Map frontend field names to database columns
+            field_map = {
+                "filename": Layer.filename,
+                "layer_type": Layer.layer_type,
+                "file_type": Layer.file_type,
+                "created_at": Layer.created_at,
+                "status": Layer.id,  # status is calculated, can't sort by it
+            }
+            sort_column = field_map.get(sort_field, Layer.created_at)
+            sort_order = desc(sort_column) if sort_dir.lower() == "desc" else asc(sort_column)
+            query = query.order_by(sort_order)
+        else:
+            # Default sort by created_at descending
+            query = query.order_by(desc(Layer.created_at))
+
+        # Get total count with filters applied
+        count_query = select(func.count(Layer.id))
+        if search:
+            search_term = f"%{search}%"
+            count_query = count_query.where(Layer.filename.ilike(search_term))
+
+        count_result = await self.session.execute(count_query)
         total = count_result.scalar() or 0
 
         # Get paginated data
         result = await self.session.execute(
-            select(Layer).offset(skip).limit(limit)
+            query.offset(skip).limit(limit)
         )
         data = result.scalars().all()
 

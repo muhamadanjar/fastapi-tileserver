@@ -32,6 +32,9 @@ async def list_layers(
     skip: int = 0,
     take: int = 10,
     page: Optional[int] = None,
+    search: Optional[str] = None,
+    sort: Optional[str] = None,
+    dir: Optional[str] = None,
     repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
@@ -39,8 +42,14 @@ async def list_layers(
     if page and page > 1:
         skip = (page - 1) * take
 
-    # Get paginated layers
-    result = await repo.paginate(skip=skip, limit=take)
+    # Get paginated layers with optional search, sort, and direction
+    result = await repo.paginate(
+        skip=skip,
+        limit=take,
+        search=search,
+        sort_field=sort,
+        sort_dir=dir or "asc"
+    )
     layers = result["data"]
     metas = result["metas"]
 
