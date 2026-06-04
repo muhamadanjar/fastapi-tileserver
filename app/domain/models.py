@@ -21,6 +21,8 @@ class LayerType(str, enum.Enum):
     wms = "wms"
     wfs = "wfs"
     wmts = "wmts"
+    geojson = "geojson"
+    kml = "kml"
     esri_mapserver = "esri_mapserver"
     esri_featureserver = "esri_featureserver"
     esri_tileserver = "esri_tileserver"
