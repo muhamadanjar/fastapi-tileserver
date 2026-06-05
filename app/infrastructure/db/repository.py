@@ -227,6 +227,10 @@ class LayerRepository:
         filename: Optional[str] = None,
         layer_type: Optional[str] = None,
         tile_url_template: Optional[str] = None,
+        bbox_west: Optional[float] = None,
+        bbox_south: Optional[float] = None,
+        bbox_east: Optional[float] = None,
+        bbox_north: Optional[float] = None,
     ) -> Optional[Layer]:
         layer = await self.get_by_id(layer_id)
         if not layer:
@@ -242,6 +246,12 @@ class LayerRepository:
             layer.layer_type = layer_type
         if tile_url_template is not None:
             layer.tile_url_template = tile_url_template
+        # Hanya update bbox jika semua 4 values ada (atomic bbox, no partial data)
+        if all(v is not None for v in [bbox_west, bbox_south, bbox_east, bbox_north]):
+            layer.bbox_west = bbox_west
+            layer.bbox_south = bbox_south
+            layer.bbox_east = bbox_east
+            layer.bbox_north = bbox_north
         layer.updated_at = datetime.now(timezone.utc)
         self.session.add(layer)
         await self.session.commit()

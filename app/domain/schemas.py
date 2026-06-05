@@ -83,6 +83,7 @@ class PatchLayerRequest(BaseModel):
     filename: Optional[str] = None
     layer_type: Optional[str] = None
     tile_url_template: Optional[str] = None
+    refresh_bbox: bool = False
 
 
 class LayerFieldsResponse(BaseModel):
@@ -95,6 +96,7 @@ class ExternalLayerRequest(BaseModel):
     filename: str
     source_url: str
     params: Optional[dict] = None
+    bbox: Optional[list[float]] = None
 
 
 class FeatureQueryResponse(BaseModel):

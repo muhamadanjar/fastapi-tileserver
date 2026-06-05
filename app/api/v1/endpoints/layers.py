@@ -118,6 +118,8 @@ async def patch_layer(
     repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
+    from app.infrastructure.services.bbox_extractor import extract_bbox
+
     updated = await repo.update(
         layer_id,
         file_metadata=req.file_metadata,
@@ -127,6 +129,18 @@ async def patch_layer(
     )
     if not updated:
         raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+
+    # Refresh bbox jika flag active dan layer adalah external
+    if req.refresh_bbox and updated.file_type == "external" and updated.layer_type in ("wms", "wmts", "esri_mapserver", "esri_featureserver", "esri_imageserver", "esri_tileserver", "esri_vectortileserver"):
+        bbox_result = await asyncio.to_thread(extract_bbox, updated.layer_type, updated.tile_url_template, updated.file_metadata)
+        if bbox_result:
+            updated = await repo.update(
+                layer_id,
+                bbox_west=bbox_result[0],
+                bbox_south=bbox_result[1],
+                bbox_east=bbox_result[2],
+                bbox_north=bbox_result[3],
+            )
 
     status = "done"
     if updated.upload_session_id:
@@ -180,6 +194,15 @@ async def add_external_layer(
     req: ExternalLayerRequest,
     repo: LayerRepository = Depends(_get_layer_repo),
 ):
+    from app.infrastructure.services.bbox_extractor import extract_bbox
+
+    # Fetch bbox dari remote service (jika tidak override di request)
+    bbox_result = None
+    if req.bbox and len(req.bbox) == 4:
+        bbox_result = tuple(req.bbox)
+    else:
+        bbox_result = await asyncio.to_thread(extract_bbox, req.layer_type, req.source_url, req.params)
+
     layer = Layer(
         id=str(uuid.uuid4()),
         code=slugify(req.filename),
@@ -190,6 +213,10 @@ async def add_external_layer(
         file_metadata=req.params or {},
         upload_session_id=None,
         is_visible=True,
+        bbox_west=bbox_result[0] if bbox_result else None,
+        bbox_south=bbox_result[1] if bbox_result else None,
+        bbox_east=bbox_result[2] if bbox_result else None,
+        bbox_north=bbox_result[3] if bbox_result else None,
     )
     created = await repo.create(layer)
     await asyncio.to_thread(sync_layer, created)
@@ -202,6 +229,9 @@ async def add_external_layer(
         tile_url_template=created.tile_url_template,
         status="done",
         created_at=created.created_at,
+        bbox=[created.bbox_west, created.bbox_south, created.bbox_east, created.bbox_north]
+            if all([created.bbox_west, created.bbox_south, created.bbox_east, created.bbox_north])
+            else None,
         file_metadata=created.file_metadata,
     )
 
