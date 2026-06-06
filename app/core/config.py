@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = Field(default="redis://localhost:6379/0", env="REDIS_URL")
 
+    # GeoServer
+    GEOSERVER_URL: str = Field(default="http://localhost:8080/geoserver", env="GEOSERVER_URL")
+    GEOSERVER_USER: str = Field(default="admin", env="GEOSERVER_USER")
+    GEOSERVER_PASSWORD: str = Field(default="geoserver", env="GEOSERVER_PASSWORD")
+    GEOSERVER_WORKSPACE: str = Field(default="tileserver", env="GEOSERVER_WORKSPACE")
+
     # Chunked upload threshold in bytes (default 10 MB)
     CHUNK_UPLOAD_THRESHOLD: int = 10_485_760
 

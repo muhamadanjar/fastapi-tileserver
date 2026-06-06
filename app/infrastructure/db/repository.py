@@ -61,7 +61,6 @@ class UploadSessionRepository:
         session_obj = await self.get_by_id(upload_id)
         if session_obj:
             session_obj.final_path = final_path
-            session_obj.status = JobStatus.pending
             session_obj.updated_at = datetime.utcnow()
             self.session.add(session_obj)
             await self.session.commit()

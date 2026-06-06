@@ -6,7 +6,6 @@ from app.domain.models import UploadSession, JobStatus
 from app.domain.schemas import TilingJobResponse
 from app.infrastructure.db.repository import UploadSessionRepository
 from app.infrastructure.services.file_service import FileService
-from app.workers.tasks import process_tiling_task
 
 
 class ProcessUploadUseCase:
@@ -30,31 +29,17 @@ class ProcessUploadUseCase:
             layer_id=layer_id,
             total_size=file.size or 0,
             received_bytes=file.size or 0,
-            status=JobStatus.pending,
+            status=JobStatus.uploaded,
             final_path=str(source_path),
             output_format=output_format,
             max_zoom=max_zoom,
         )
         await self.repo.create(session)
 
-        process_tiling_task.delay(
-            upload_id=upload_id,
-            layer_id=layer_id,
-            file_type=file_type,
-            source_path=str(source_path),
-            output_format=output_format,
-            max_zoom=max_zoom,
-        )
-
-        if output_format == "mvt":
-            tile_url = f"/tiles/{layer_id}/{{z}}/{{x}}/{{y}}.pbf"
-        else:
-            tile_url = f"/tiles/{layer_id}/{{z}}/{{x}}/{{y}}.png"
-
         return TilingJobResponse(
-            message="File uploaded successfully, tiling job queued.",
+            message="File uploaded. POST /uploads/{upload_id}/tile to start tiling.",
             upload_id=upload_id,
             file_type=file_type,
             layer_id=layer_id,
-            tile_url_template=tile_url,
+            tile_url_template=None,
         )

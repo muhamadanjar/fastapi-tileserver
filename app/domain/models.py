@@ -7,6 +7,7 @@ from sqlmodel import SQLModel, Field, Column, JSON
 
 class JobStatus(str, enum.Enum):
     pending = "pending"
+    uploaded = "uploaded"
     uploading = "uploading"
     paused = "paused"
     processing = "processing"

@@ -50,12 +50,12 @@ No test suite or linter is configured.
 Clean Architecture layered structure:
 
 - **`app/api/v1/endpoints/`** — HTTP layer.
-  - `tiles.py` — `POST /upload-and-tile` direct upload (file < `CHUNK_UPLOAD_THRESHOLD`).
-  - `upload.py` — Chunked upload: `POST /uploads/init`, `PATCH /uploads/{upload_id}`, `GET /uploads/{upload_id}/status`.
+  - `tiles.py` — `POST /upload` direct upload (file < `CHUNK_UPLOAD_THRESHOLD`).
+  - `upload.py` — Chunked upload: `POST /uploads/init`, `PATCH /uploads/{upload_id}`, `GET /uploads/{upload_id}/status`. Tiling trigger: `POST /uploads/{upload_id}/tile`. GeoServer publish: `POST /uploads/{upload_id}/geoserver`.
 - **`app/usecases/`** — Orchestration.
-  - `ProcessUploadUseCase` — saves file, persists `UploadSession`, queues Celery tiling task.
+  - `ProcessUploadUseCase` — saves file, persists `UploadSession` with status `uploaded` (no auto-tiling).
   - `InitChunkedUploadUseCase` — creates upload session + chunk directory.
-  - `ReceiveChunkUseCase` — stores chunk part, assembles on last chunk, queues Celery tiling task.
+  - `ReceiveChunkUseCase` — stores chunk part, assembles on last chunk, sets status `uploaded` (no auto-tiling).
 - **`app/infrastructure/`** — Side effects:
   - `services/file_service.py` — `FileService`: save uploads, validate formats, extract ZIPs, `prepare_source_path()` reused by both flows.
   - `services/tiling_service.py` — `TilingService.process_tiling()`, `VectorTiler`, `RasterTiler`.
@@ -71,10 +71,14 @@ Clean Architecture layered structure:
 
 ### Upload flows
 
+Upload completes with status `uploaded` (file ready, not yet processed). User then chooses:
+1. Tile via tileserver: `POST /uploads/{upload_id}/tile`
+2. Publish to GeoServer: `POST /uploads/{upload_id}/geoserver`
+
 **Small file (< `CHUNK_UPLOAD_THRESHOLD`, default 10 MB):**
 ```
-POST /api/v1/upload-and-tile   (multipart/form-data)
-→ file saved → UploadSession created → Celery task queued → 200 TilingJobResponse
+POST /api/v1/upload   (multipart/form-data)
+→ file saved → UploadSession created with status=uploaded → 200 TilingJobResponse
 ```
 
 **Large file (chunked, pause/resume):**
@@ -84,19 +88,41 @@ POST /api/v1/uploads/init              { filename, total_size }
 
 PATCH /api/v1/uploads/{upload_id}      Content-Range: bytes 0-10485759/52428800
 → chunk stored as data/chunks/{upload_id}/{index}.part
-→ on last chunk: file assembled → FileService.prepare_source_path() → Celery task queued
+→ on last chunk: file assembled → FileService.prepare_source_path() → status=uploaded
 
 GET /api/v1/uploads/{upload_id}/status
-→ { status: pending|processing|done|failed, received_bytes, total_size }
+→ { status: uploaded|processing|done|failed, received_bytes, total_size }
+```
+
+**Trigger tiling:**
+```
+POST /api/v1/uploads/{upload_id}/tile
+→ status=processing → Celery task queued → status=done → tile_url_template populated
+```
+
+**Publish to GeoServer (SHP only):**
+```
+POST /api/v1/uploads/{upload_id}/geoserver
+→ status=processing → GeoServer REST publish → Layer created with wms_url → status=done
 ```
 
 ### Tiling flow
 
-1. Celery worker receives `process_tiling_task` from RabbitMQ broker.
-2. Updates `UploadSession.status = processing`.
-3. Calls `TilingService.process_tiling(file_type, source_path, layer_id)`.
-4. Updates status to `done` or `failed` (with error_message on failure).
-5. Tiles served statically at `/tiles/<layer_id>/{z}/{x}/{y}.png`.
+1. User calls `POST /uploads/{upload_id}/tile` (manual trigger, not automatic).
+2. Endpoint sets `UploadSession.status = processing`, queues Celery task.
+3. Celery worker receives `process_tiling_task` from RabbitMQ broker.
+4. Calls `TilingService.process_tiling(file_type, source_path, layer_id)`.
+5. Updates status to `done` or `failed` (with error_message on failure).
+6. Tiles served statically at `/tiles/<layer_id>/{z}/{x}/{y}.png`.
+
+### GeoServer publish flow (SHP only)
+
+1. User calls `POST /uploads/{upload_id}/geoserver` with SHP file (manual trigger).
+2. Endpoint sets `UploadSession.status = processing`.
+3. `GeoServerService.publish_shp()` uploads to GeoServer via REST API.
+4. Creates workspace + datastore + featureType, returns WMS/WFS URLs.
+5. Layer record created with `layer_type=wms`, `tile_url_template=WMS_URL`, `file_metadata.geoserver` populated.
+6. Updates status to `done` or `failed`.
 
 ### Data directory layout
 

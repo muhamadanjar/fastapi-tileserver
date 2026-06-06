@@ -1,5 +1,7 @@
+import os
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from slugify import slugify
 
 from app.core.exceptions import (
     ChunkUploadError,
@@ -8,6 +10,7 @@ from app.core.exceptions import (
     SessionExpiredError,
     UnsupportedFileFormatException,
 )
+from app.domain.models import JobStatus, Layer, LayerType
 from app.domain.schemas import (
     ChunkUploadResponse,
     JobStatusResponse,
@@ -20,12 +23,17 @@ from app.infrastructure.db.repository import UploadSessionRepository, LayerRepos
 from app.usecases.init_chunked_upload import InitChunkedUploadUseCase
 from app.usecases.receive_chunk import ReceiveChunkUseCase
 from app.workers.tasks import process_tiling_task
+from app.infrastructure.services.geoserver_service import GeoServerService
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
 
 def _get_repo(session=Depends(get_async_session)) -> UploadSessionRepository:
     return UploadSessionRepository(session)
+
+
+def _get_layer_repo(session=Depends(get_async_session)) -> LayerRepository:
+    return LayerRepository(session)
 
 
 @router.post("/init", response_model=UploadInitResponse, status_code=201)
@@ -48,28 +56,145 @@ async def init_upload(
     )
 
 
-@router.post("/{upload_id}/{chunk_index}", response_model=ChunkUploadResponse)
-async def receive_chunk(
+@router.post("/{upload_id}/tile")
+async def trigger_tiling(
     upload_id: str,
-    chunk_index: int,
-    request: Request,
+    output_format: str = Query(None),
+    max_zoom: int = Query(None),
     repo: UploadSessionRepository = Depends(_get_repo),
 ):
-    chunk_data = await request.body()
-    if not chunk_data:
-        raise HTTPException(status_code=400, detail="Empty request body.")
+    session = await repo.get_by_id(upload_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+
+    allowed = {JobStatus.uploaded, JobStatus.failed}
+    if session.status not in allowed:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot trigger tiling from status '{session.status}'. Must be 'uploaded' or 'failed'.",
+        )
+
+    if not session.final_path or not os.path.exists(session.final_path):
+        raise HTTPException(status_code=400, detail="Assembled file not found on disk")
+
+    layer_id = session.layer_id
+    file_type = session.file_type
+    source_path = session.final_path
+    fmt = output_format if output_format else session.output_format
+    zoom = max_zoom if max_zoom is not None else session.max_zoom
+
+    process_tiling_task.delay(
+        upload_id=upload_id,
+        layer_id=layer_id,
+        file_type=file_type,
+        source_path=source_path,
+        output_format=fmt,
+        max_zoom=zoom,
+    )
+
+    return {
+        "message": "Tiling started",
+        "upload_id": upload_id,
+        "layer_id": layer_id,
+        "status": "processing",
+    }
+
+
+@router.post("/{upload_id}/geoserver")
+async def publish_to_geoserver(
+    upload_id: str,
+    repo: UploadSessionRepository = Depends(_get_repo),
+    layer_repo: LayerRepository = Depends(_get_layer_repo),
+):
+    session = await repo.get_by_id(upload_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+
+    filename_lower = session.filename.lower()
+    if not (filename_lower.endswith('.shp') or filename_lower.endswith('.zip')):
+        raise HTTPException(
+            status_code=400,
+            detail=f"GeoServer publish only supports .shp/.zip files, got '{session.filename}'",
+        )
+
+    allowed = {JobStatus.uploaded, JobStatus.failed}
+    if session.status not in allowed:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot publish from status '{session.status}'. Must be 'uploaded' or 'failed'.",
+        )
+
+    if not session.final_path or not os.path.exists(session.final_path):
+        raise HTTPException(status_code=400, detail="Assembled file not found on disk")
+
+    await repo.set_status(upload_id, JobStatus.processing)
+
+    layer_id = session.layer_id
+    store_name = layer_id
 
     try:
-        use_case = ReceiveChunkUseCase(repo)
-        return await use_case.execute(upload_id, chunk_index, chunk_data)
-    except SessionNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=exc.message)
-    except SessionAlreadyCompleteError as exc:
-        raise HTTPException(status_code=409, detail=exc.message)
-    except SessionExpiredError as exc:
-        raise HTTPException(status_code=410, detail=exc.message)
-    except ChunkUploadError as exc:
-        raise HTTPException(status_code=400, detail=exc.message)
+        svc = GeoServerService(
+            url=settings.GEOSERVER_URL,
+            username=settings.GEOSERVER_USER,
+            password=settings.GEOSERVER_PASSWORD,
+            workspace=settings.GEOSERVER_WORKSPACE,
+        )
+        result = svc.publish_shp(session.final_path, store_name)
+    except Exception as exc:
+        await repo.set_status(upload_id, JobStatus.failed, str(exc))
+        raise HTTPException(status_code=502, detail=f"GeoServer publish failed: {exc}")
+
+    from app.infrastructure.services.bbox_extractor import extract_bbox_from_file, get_crs_from_file
+
+    bbox = extract_bbox_from_file(session.final_path)
+    crs_str = get_crs_from_file(session.final_path) if bbox else None
+
+    geoserver_meta = {**result}
+    if crs_str:
+        geoserver_meta['crs'] = crs_str
+
+    existing_layer = await layer_repo.get_by_id(layer_id)
+    if existing_layer:
+        await layer_repo.update(
+            layer_id=layer_id,
+            layer_type=LayerType.wms,
+            tile_url_template=result["wms_url"],
+            file_metadata={
+                "geoserver": geoserver_meta,
+            },
+            bbox_west=bbox[0] if bbox else None,
+            bbox_south=bbox[1] if bbox else None,
+            bbox_east=bbox[2] if bbox else None,
+            bbox_north=bbox[3] if bbox else None,
+        )
+    else:
+        layer = Layer(
+            id=layer_id,
+            upload_session_id=upload_id,
+            code=slugify(session.filename),
+            layer_type=LayerType.wms,
+            filename=session.filename,
+            file_type='external',
+            tile_url_template=result["wms_url"],
+            file_metadata={"geoserver": geoserver_meta},
+            bbox_west=bbox[0] if bbox else None,
+            bbox_south=bbox[1] if bbox else None,
+            bbox_east=bbox[2] if bbox else None,
+            bbox_north=bbox[3] if bbox else None,
+        )
+        await layer_repo.create(layer)
+
+    await repo.set_status(upload_id, JobStatus.done)
+
+    return {
+        "message": "Layer published to GeoServer",
+        "upload_id": upload_id,
+        "layer_id": layer_id,
+        "layer_name": result["layer_name"],
+        "wms_url": result["wms_url"],
+        "wfs_url": result["wfs_url"],
+        "workspace": result["workspace"],
+    }
 
 
 @router.get("/{upload_id}/status", response_model=JobStatusResponse)
@@ -123,7 +248,7 @@ async def retry_tiling(
     session = await repo.get_by_id(upload_id)
     if not session:
         raise HTTPException(status_code=404, detail="Upload session not found")
-    if session.status not in ("pending", "failed"):
+    if session.status not in (JobStatus.uploaded, JobStatus.failed):
         raise HTTPException(status_code=409, detail=f"Cannot retry session with status '{session.status}'")
     if not session.final_path or not Path(session.final_path).exists():
         raise HTTPException(status_code=404, detail="Source file missing from disk")
@@ -137,3 +262,27 @@ async def retry_tiling(
         max_zoom=session.max_zoom,
     )
     return {"message": "Tiling re-queued", "upload_id": upload_id, "layer_id": session.layer_id}
+
+
+@router.post("/{upload_id}/{chunk_index}", response_model=ChunkUploadResponse)
+async def receive_chunk(
+    upload_id: str,
+    chunk_index: int,
+    request: Request,
+    repo: UploadSessionRepository = Depends(_get_repo),
+):
+    chunk_data = await request.body()
+    if not chunk_data:
+        raise HTTPException(status_code=400, detail="Empty request body.")
+
+    try:
+        use_case = ReceiveChunkUseCase(repo)
+        return await use_case.execute(upload_id, chunk_index, chunk_data)
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.message)
+    except SessionAlreadyCompleteError as exc:
+        raise HTTPException(status_code=409, detail=exc.message)
+    except SessionExpiredError as exc:
+        raise HTTPException(status_code=410, detail=exc.message)
+    except ChunkUploadError as exc:
+        raise HTTPException(status_code=400, detail=exc.message)

@@ -13,7 +13,7 @@ class TilingJobResponse(BaseModel):
     upload_id: str
     file_type: str
     layer_id: str
-    tile_url_template: str
+    tile_url_template: Optional[str] = None
 
 
 class LayerInfo(BaseModel):

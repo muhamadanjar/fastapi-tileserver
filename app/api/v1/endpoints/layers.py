@@ -163,6 +163,71 @@ async def patch_layer(
     )
 
 
+@router.post("/{layer_id}/sync-bbox")
+async def sync_layer_bbox(
+    layer_id: str,
+    repo: LayerRepository = Depends(_get_layer_repo),
+    upload_repo: UploadSessionRepository = Depends(_get_session_repo),
+):
+    from app.infrastructure.services.bbox_extractor import extract_bbox, extract_bbox_from_file, get_crs_from_file
+    import os
+
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail="Layer not found")
+
+    bbox = None
+    crs_str = None
+
+    FILE_BASED_TYPES = {'tile', 'mvt', 'vector'}
+    EXTERNAL_TYPES = {'wms', 'wmts', 'wfs', 'geojson', 'kml',
+                      'esri_mapserver', 'esri_featureserver', 'esri_tileserver',
+                      'esri_vectortileserver', 'esri_imageserver'}
+
+    if layer.layer_type in FILE_BASED_TYPES:
+        if not layer.upload_session_id:
+            raise HTTPException(status_code=422, detail="No source file: layer has no upload session")
+        session = await upload_repo.get_by_id(layer.upload_session_id)
+        if not session or not session.final_path:
+            raise HTTPException(status_code=422, detail="Source file path not found in upload session")
+        if not os.path.exists(session.final_path):
+            raise HTTPException(status_code=422, detail="Source file no longer exists on disk")
+        bbox = await asyncio.to_thread(extract_bbox_from_file, session.final_path)
+        if bbox:
+            crs_str = await asyncio.to_thread(get_crs_from_file, session.final_path)
+
+    elif layer.layer_type in EXTERNAL_TYPES:
+        params = dict(layer.file_metadata or {}) if layer.file_metadata else {}
+        if layer.layer_type == 'wms' and not params.get('layers'):
+            if 'geoserver' in params and params['geoserver'].get('layer_name'):
+                params['layers'] = params['geoserver']['layer_name']
+        bbox = await asyncio.to_thread(extract_bbox, layer.layer_type, layer.tile_url_template, params)
+
+    if not bbox:
+        raise HTTPException(status_code=422, detail="Could not extract bbox for this layer")
+
+    west, south, east, north = bbox
+    new_metadata = dict(layer.file_metadata or {})
+    if crs_str:
+        new_metadata['crs'] = crs_str
+
+    await repo.update(
+        layer_id=layer_id,
+        bbox_west=west,
+        bbox_south=south,
+        bbox_east=east,
+        bbox_north=north,
+        file_metadata=new_metadata,
+    )
+
+    return {
+        "message": "BBox synced",
+        "layer_id": layer_id,
+        "bbox": [west, south, east, north],
+        "crs": crs_str,
+    }
+
+
 @router.post("/{layer_id}/retile")
 async def retile_layer(
     layer_id: str,

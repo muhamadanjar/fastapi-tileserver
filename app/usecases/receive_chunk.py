@@ -12,7 +12,6 @@ from app.domain.schemas import ChunkUploadResponse
 from app.infrastructure.db.repository import UploadSessionRepository
 from app.infrastructure.services.file_service import FileService
 from app.infrastructure.storage.chunk_storage import ChunkStorage
-from app.workers.tasks import process_tiling_task
 
 
 class ReceiveChunkUseCase:
@@ -75,23 +74,9 @@ class ReceiveChunkUseCase:
                 raise ChunkUploadError(f"Assembly failed: {exc}") from exc
 
             await self.repo.mark_complete(upload_id, str(source_path))
-            process_tiling_task.delay(
-                upload_id=upload_id,
-                layer_id=session.layer_id,
-                file_type=session.file_type,
-                source_path=str(source_path),
-                output_format=session.output_format,
-                max_zoom=session.max_zoom,
-            )
+            await self.repo.set_status(upload_id, JobStatus.uploaded)
 
         progress_percent = round(new_uploaded_chunks / session.total_chunks * 100, 2)
-
-        tile_url = None
-        if is_complete:
-            if session.output_format == "mvt":
-                tile_url = f"/tiles/{session.layer_id}/{{z}}/{{x}}/{{y}}.pbf"
-            else:
-                tile_url = f"/tiles/{session.layer_id}/{{z}}/{{x}}/{{y}}.png"
 
         return ChunkUploadResponse(
             upload_id=upload_id,
@@ -102,5 +87,5 @@ class ReceiveChunkUseCase:
             progress_percent=progress_percent,
             is_complete=is_complete,
             layer_id=session.layer_id if is_complete else None,
-            tile_url_template=tile_url,
+            tile_url_template=None,
         )

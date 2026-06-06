@@ -19,8 +19,8 @@ def get_process_upload_usecase(
     )
 
 
-@router.post("/upload-and-tile", response_model=TilingJobResponse)
-async def upload_and_tile(
+@router.post("/upload", response_model=TilingJobResponse)
+async def upload(
     file: UploadFile = File(...),
     output_format: str = Form("raster"),
     max_zoom: int = Form(None),
