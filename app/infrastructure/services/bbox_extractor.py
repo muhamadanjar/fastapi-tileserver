@@ -1,4 +1,5 @@
 import logging
+import math
 import socket
 from typing import Optional, Tuple
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
@@ -179,6 +180,11 @@ def _extract_esri_bbox(source_url: str, params: Optional[dict] = None) -> Option
 			west, south = transformer.transform(west, south)
 			east, north = transformer.transform(east, north)
 
+		# Check for NaN values (transformation may fail silently and return NaN)
+		if any(math.isnan(v) for v in [west, south, east, north]):
+			logger.debug(f"ESRI bbox contains NaN after transformation: ({west}, {south}, {east}, {north})")
+			return None
+
 		return (west, south, east, north)
 	except Exception as e:
 		logger.debug(f"ESRI bbox extraction failed: {e}")
@@ -195,3 +201,69 @@ def _build_esri_info_url(source_url: str) -> str:
 	if parts and parts[-1].isdigit():
 		url = "/".join(parts[:-1])
 	return url
+
+
+def extract_bbox_from_file(path: str) -> Optional[BBox]:
+	"""
+	Extract bbox (west, south, east, north) in EPSG:4326 from a local file.
+	Supports vector files (via geopandas) and raster files (via rasterio).
+	Returns None if extraction fails.
+	"""
+	from pathlib import Path
+	try:
+		p = Path(path)
+		ext = p.suffix.lower()
+
+		VECTOR_EXTS = {'.shp', '.geojson', '.json', '.gpkg', '.kml', '.zip'}
+		RASTER_EXTS = {'.tif', '.tiff', '.img', '.png', '.jpg', '.jpeg'}
+
+		if ext in VECTOR_EXTS:
+			import geopandas as gpd
+			gdf = gpd.read_file(path)
+			if gdf.crs is None:
+				gdf = gdf.set_crs('EPSG:4326')
+			gdf_4326 = gdf.to_crs('EPSG:4326')
+			b = gdf_4326.total_bounds
+			return (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
+
+		if ext in RASTER_EXTS:
+			import rasterio
+			from rasterio.crs import CRS
+			from rasterio.warp import transform_bounds
+			with rasterio.open(path) as src:
+				crs = src.crs or CRS.from_epsg(4326)
+				west, south, east, north = transform_bounds(crs, 'EPSG:4326', *src.bounds)
+				west, south, east, north = float(west), float(south), float(east), float(north)
+				# Check for NaN values (transformation may fail silently)
+				if any(math.isnan(v) for v in [west, south, east, north]):
+					logger.debug(f"Raster bbox contains NaN after transformation: ({west}, {south}, {east}, {north})")
+					return None
+				return (west, south, east, north)
+	except Exception as e:
+		logger.debug(f"File bbox extraction failed for {path}: {e}")
+		return None
+
+	return None
+
+
+def get_crs_from_file(path: str) -> Optional[str]:
+	"""Return CRS as EPSG string or WKT. Returns None on failure."""
+	from pathlib import Path
+	try:
+		p = Path(path)
+		ext = p.suffix.lower()
+
+		if ext in {'.shp', '.geojson', '.json', '.gpkg', '.kml', '.zip'}:
+			import geopandas as gpd
+			gdf = gpd.read_file(path)
+			return str(gdf.crs) if gdf.crs else None
+
+		if ext in {'.tif', '.tiff', '.img', '.png', '.jpg', '.jpeg'}:
+			import rasterio
+			with rasterio.open(path) as src:
+				return src.crs.to_string() if src.crs else None
+	except Exception as e:
+		logger.debug(f"CRS extraction failed for {path}: {e}")
+		return None
+
+	return None
