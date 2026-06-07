@@ -267,3 +267,9 @@ docker ps | grep rabbitmq  # or check http://localhost:15672
 - Migration fails on app startup: Run `alembic current` to check applied versions, `alembic history` for all versions
 - Foreign key constraint error: Ensure tables are created in correct order (upload_sessions before layers)
 - "target_metadata has no tables": Confirm `app/domain/models.py` imports are correct in `alembic/env.py`
+
+## Rules
+
+- **Commits are FORBIDDEN** — Claude must NOT run `git commit` under any circumstances
+- **Git read-only** — Only these operations are allowed: `git log`, `git status`, `git diff`, `git show`
+- **FORBIDDEN: `git commit`, `git push`, `git merge`, `git rebase`, `git reset`** — all git write operations are prohibited
