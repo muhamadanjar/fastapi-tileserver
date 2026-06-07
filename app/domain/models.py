@@ -1,7 +1,7 @@
 import enum
 from datetime import datetime, timezone
 from typing import Dict, Optional, Any
-from sqlalchemy import DateTime
+from sqlalchemy import DateTime, Text
 from sqlmodel import SQLModel, Field, Column, JSON
 
 
@@ -75,6 +75,10 @@ class Layer(SQLModel, table=True):
         sa_column=Column(JSON),
         description="Additional metadata about the file in JSON format"
     )
+
+    abstract: Optional[str] = Field(default=None, sa_column=Column(Text()))
+    topic_category: Optional[str] = Field(default=None, max_length=64)
+    language: Optional[str] = Field(default="eng", max_length=8)
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))

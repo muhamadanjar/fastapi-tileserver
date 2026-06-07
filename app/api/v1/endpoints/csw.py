@@ -1,4 +1,5 @@
 import configparser
+import sys
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
@@ -32,7 +33,7 @@ def _make_config(csw_url: str, base_url: str) -> configparser.ConfigParser:
             "gzip_compresslevel": "9",
             "domainquerytype": "list",
             "domaincounts": "false",
-            "profiles": "",
+            "profiles": "apiso",
         },
         "manager": {
             "transactions": "false",
@@ -81,15 +82,22 @@ async def csw(request: Request):
     config = _make_config(csw_url, base_url)
 
     environ = {
-        "REQUEST_METHOD": request.method,
-        "QUERY_STRING": str(request.url.query),
-        "SERVER_NAME": request.url.hostname or "localhost",
-        "SERVER_PORT": str(request.url.port or 8000),
-        "PATH_INFO": request.url.path,
-        "HTTP_HOST": request.headers.get("host", "localhost"),
-        "wsgi.input": BytesIO(body),
-        "CONTENT_TYPE": request.headers.get("content-type", ""),
-        "CONTENT_LENGTH": str(len(body)),
+        "REQUEST_METHOD":    request.method,
+        "QUERY_STRING":      str(request.url.query),
+        "SERVER_NAME":       request.url.hostname or "localhost",
+        "SERVER_PORT":       str(request.url.port or (443 if request.url.scheme == "https" else 80)),
+        "PATH_INFO":         request.url.path,
+        "SCRIPT_NAME":       "",
+        "HTTP_HOST":         request.headers.get("host", "localhost"),
+        "HTTP_ACCEPT":       request.headers.get("accept", "application/xml"),
+        "wsgi.url_scheme":   request.url.scheme or "http",
+        "wsgi.input":        BytesIO(body),
+        "wsgi.errors":       sys.stderr,
+        "wsgi.multithread":  True,
+        "wsgi.multiprocess": False,
+        "wsgi.run_once":     False,
+        "CONTENT_TYPE":      request.headers.get("content-type", ""),
+        "CONTENT_LENGTH":    str(len(body)),
     }
 
     csw_obj = PycswServer(config, environ)

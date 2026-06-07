@@ -126,6 +126,9 @@ async def patch_layer(
         filename=req.filename,
         layer_type=req.layer_type,
         tile_url_template=req.tile_url_template,
+        abstract=req.abstract,
+        topic_category=req.topic_category,
+        language=req.language,
     )
     if not updated:
         raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
@@ -160,6 +163,9 @@ async def patch_layer(
         created_at=updated.created_at,
         bbox=[updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north] if all([updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north]) else None,
         file_metadata=updated.file_metadata,
+        abstract=updated.abstract,
+        topic_category=updated.topic_category,
+        language=updated.language,
     )
 
 
@@ -298,6 +304,9 @@ async def add_external_layer(
             if all([created.bbox_west, created.bbox_south, created.bbox_east, created.bbox_north])
             else None,
         file_metadata=created.file_metadata,
+        abstract=created.abstract,
+        topic_category=created.topic_category,
+        language=created.language,
     )
 
 

@@ -76,6 +76,9 @@ class LayerResponse(BaseModel):
     created_at: datetime
     bbox: Optional[list[float]] = None
     file_metadata: Optional[dict] = None
+    abstract: Optional[str] = None
+    topic_category: Optional[str] = None
+    language: Optional[str] = None
 
 
 class PatchLayerRequest(BaseModel):
@@ -84,6 +87,9 @@ class PatchLayerRequest(BaseModel):
     layer_type: Optional[str] = None
     tile_url_template: Optional[str] = None
     refresh_bbox: bool = False
+    abstract: Optional[str] = None
+    topic_category: Optional[str] = None
+    language: Optional[str] = None
 
 
 class LayerFieldsResponse(BaseModel):

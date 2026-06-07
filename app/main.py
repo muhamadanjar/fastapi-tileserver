@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +10,7 @@ from app.api.v1.api import api_router
 from app.api.v1.endpoints.mvt import router as mvt_router
 from app.infrastructure.db.connection import db
 
+_csw_logger = logging.getLogger("app.csw_init")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -23,16 +25,27 @@ async def _init_csw():
     from app.infrastructure.db.connection import db
     from app.infrastructure.services.csw_sync import init_csw_db, sync_layer
 
-    await asyncio.to_thread(init_csw_db)
+    try:
+        await asyncio.to_thread(init_csw_db)
+        _csw_logger.info("CSW records table initialized.")
+    except Exception as exc:
+        _csw_logger.error("CSW table init failed: %s", exc, exc_info=True)
+        return
 
     def _sync_existing():
+        failed = 0
         with db.get_session() as session:
             layers = session.exec(select(Layer)).all()
             for layer in layers:
                 try:
                     sync_layer(layer)
-                except Exception:
-                    pass
+                except Exception as e:
+                    failed += 1
+                    _csw_logger.warning(
+                        "CSW sync failed for layer %s: %s", layer.id, e
+                    )
+        if failed:
+            _csw_logger.warning("CSW startup sync: %d layers failed.", failed)
 
     await asyncio.to_thread(_sync_existing)
 

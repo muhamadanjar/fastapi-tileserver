@@ -230,6 +230,9 @@ class LayerRepository:
         bbox_south: Optional[float] = None,
         bbox_east: Optional[float] = None,
         bbox_north: Optional[float] = None,
+        abstract: Optional[str] = None,
+        topic_category: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> Optional[Layer]:
         layer = await self.get_by_id(layer_id)
         if not layer:
@@ -251,6 +254,12 @@ class LayerRepository:
             layer.bbox_south = bbox_south
             layer.bbox_east = bbox_east
             layer.bbox_north = bbox_north
+        if abstract is not None:
+            layer.abstract = abstract
+        if topic_category is not None:
+            layer.topic_category = topic_category
+        if language is not None:
+            layer.language = language
         layer.updated_at = datetime.now(timezone.utc)
         self.session.add(layer)
         await self.session.commit()
