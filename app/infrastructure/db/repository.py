@@ -76,6 +76,14 @@ class UploadSessionRepository:
             self.session.add(session_obj)
             await self.session.commit()
 
+    async def delete(self, upload_id: str) -> bool:
+        session_obj = await self.get_by_id(upload_id)
+        if session_obj:
+            await self.session.delete(session_obj)
+            await self.session.commit()
+            return True
+        return False
+
 
 class SyncUploadSessionRepository:
     """Synchronous variant used by the worker process."""
@@ -123,7 +131,7 @@ class SyncLayerRepository:
         layer = self.get_by_id(layer_id)
         if layer:
             existing = dict(layer.file_metadata or {})
-            existing["progress"] = progress
+            existing["tile_process"] = progress
             layer.file_metadata = existing
             _sa_attrs.flag_modified(layer, "file_metadata")
             layer.updated_at = datetime.now(timezone.utc)

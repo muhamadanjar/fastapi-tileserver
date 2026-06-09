@@ -1,4 +1,6 @@
 from pathlib import Path
+from datetime import datetime
+from sqlalchemy.orm import attributes as _sa_attrs
 
 from app.workers.celery_app import celery_app
 from app.infrastructure.db.connection import db
@@ -13,10 +15,12 @@ def _make_progress_callback(layer_id: str):
     state = {"last": None}
 
     def callback(progress: dict) -> None:
-        state["last"] = progress
+        payload = {**progress, "status": "processing"}
+        state["last"] = payload
         try:
             with db.get_session() as session:
-                SyncLayerRepository(session).update_progress(layer_id, progress)
+                SyncLayerRepository(session).update_progress(layer_id, payload)
+                print(f"[progress] Updated {layer_id}: {payload.get('percent', 0)}%")
         except Exception as exc:
             print(f"[progress] Failed to write progress for {layer_id}: {exc}")
 
@@ -26,7 +30,7 @@ def _make_progress_callback(layer_id: str):
             try:
                 with db.get_session() as session:
                     SyncLayerRepository(session).update_progress(
-                        layer_id, {**last, "percent": 100}
+                        layer_id, {**last, "percent": 100, "status": "done"}
                     )
             except Exception as exc:
                 print(f"[progress] Failed to finalize progress for {layer_id}: {exc}")
@@ -39,6 +43,35 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
     with db.get_session() as session:
         repo = SyncUploadSessionRepository(session)
         repo.set_status(upload_id, JobStatus.processing)
+
+        # Create placeholder Layer at start so progress callbacks can update it
+        layer_repo = SyncLayerRepository(session)
+        try:
+            if not layer_repo.get_by_id(layer_id):
+                upload_session = repo.get_by_id(upload_id)
+                if upload_session:
+                    placeholder = Layer(
+                        id=layer_id,
+                        upload_session_id=upload_id,
+                        code=slugify(upload_session.filename),
+                        filename=upload_session.filename,
+                        file_type=file_type,
+                        layer_type="tile",
+                        tile_url_template="",
+                        file_metadata={
+                            "tile_process": {"percent": 0, "status": "processing"},
+                            "source_file": {
+                                "filename": upload_session.filename,
+                                "upload_id": upload_id,
+                                "file_type": file_type,
+                                "uploaded_at": datetime.now().isoformat(),
+                            }
+                        },
+                    )
+                    layer_repo.create(placeholder)
+                    print(f"[tiling] Created placeholder layer {layer_id}")
+        except Exception as exc:
+            print(f"[tiling] Failed to create placeholder layer {layer_id}: {exc}")
 
     try:
         style = None
@@ -66,7 +99,25 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
 
                 layer_repo = SyncLayerRepository(session)
                 existing_layer = layer_repo.get_by_id(layer_id)
-                if not existing_layer:
+                if existing_layer:
+                    # Update placeholder with final tile results (preserve file_metadata)
+                    existing_layer.layer_type = layer_type
+                    existing_layer.tile_url_template = tile_url
+                    existing_layer.bbox_west = bounds[0] if bounds else None
+                    existing_layer.bbox_south = bounds[1] if bounds else None
+                    existing_layer.bbox_east = bounds[2] if bounds else None
+                    existing_layer.bbox_north = bounds[3] if bounds else None
+                    # Ensure file_metadata is not lost
+                    if not existing_layer.file_metadata:
+                        existing_layer.file_metadata = {}
+                    _sa_attrs.flag_modified(existing_layer, "file_metadata")
+                    session.add(existing_layer)
+                    session.commit()
+                    try:
+                        sync_layer(existing_layer)
+                    except Exception:
+                        pass
+                else:
                     layer = Layer(
                         id=layer_id,
                         upload_session_id=upload_id,
@@ -86,7 +137,28 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
                     except Exception:
                         pass
     except Exception as exc:
+        # Write failed status to tile_process
+        try:
+            with db.get_session() as session:
+                SyncLayerRepository(session).update_progress(
+                    layer_id, {"percent": 0, "status": "failed"}
+                )
+        except Exception:
+            pass
+
         with db.get_session() as session:
             repo = SyncUploadSessionRepository(session)
             repo.set_status(upload_id, JobStatus.failed, error_message=str(exc))
         raise self.retry(exc=exc, countdown=5)
+
+
+@celery_app.task(bind=True, max_retries=3)
+def clean_up_task(self, layer_id: str):
+    
+    with db.get_session() as session:
+        layer_repo = SyncLayerRepository(session)
+        try:
+            if not layer_repo.get_by_id(layer_id):
+                return
+        except Exception as exc:
+            print(f"[tiling] Failed to clean up layer {layer_id}: {exc}")

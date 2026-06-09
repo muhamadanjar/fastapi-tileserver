@@ -1,4 +1,7 @@
+import asyncio
 import os
+import shutil
+from datetime import datetime
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from slugify import slugify
@@ -24,6 +27,7 @@ from app.usecases.init_chunked_upload import InitChunkedUploadUseCase
 from app.usecases.receive_chunk import ReceiveChunkUseCase
 from app.workers.tasks import process_tiling_task
 from app.infrastructure.services.geoserver_service import GeoServerService
+from app.infrastructure.services.bbox_extractor import extract_bbox_from_file
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
@@ -194,6 +198,105 @@ async def publish_to_geoserver(
         "wms_url": result["wms_url"],
         "wfs_url": result["wfs_url"],
         "workspace": result["workspace"],
+    }
+
+
+@router.post("/{upload_id}/save")
+async def save_geojson(
+    upload_id: str,
+    repo: UploadSessionRepository = Depends(_get_repo),
+    layer_repo: LayerRepository = Depends(_get_layer_repo),
+):
+    session = await repo.get_by_id(upload_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+
+    filename_lower = session.filename.lower()
+    allowed_exts = ('.geojson', '.json')
+    if not any(filename_lower.endswith(ext) for ext in allowed_exts):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Save layer only supports .geojson/.json files, got '{session.filename}'",
+        )
+
+    allowed_statuses = {JobStatus.uploaded, JobStatus.failed}
+    if session.status not in allowed_statuses:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot save from status '{session.status}'. Must be 'uploaded' or 'failed'.",
+        )
+
+    if not session.final_path or not os.path.exists(session.final_path):
+        raise HTTPException(status_code=400, detail="Assembled file not found on disk")
+
+    layer_id = session.layer_id
+    file_ext = '.geojson' if filename_lower.endswith('.geojson') else '.json'
+
+    # Create layer directory if it doesn't exist
+    layer_dir = Path(settings.TILES_DIR) / layer_id
+    layer_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy GeoJSON or JSON as-is
+    dest_path = layer_dir / f"data{file_ext}"
+    shutil.copy2(session.final_path, dest_path)
+
+    # Extract bbox
+    bbox = extract_bbox_from_file(session.final_path)
+
+    # Create or update layer
+    tile_url_template = f"/{layer_id}/data{file_ext}"
+    source_file_meta = {
+        "filename": session.filename,
+        "upload_id": upload_id,
+        "file_type": 'vector',
+        "uploaded_at": datetime.now().isoformat(),
+    }
+    existing_layer = await layer_repo.get_by_id(layer_id)
+
+    if existing_layer:
+        # Preserve existing metadata, merge source_file
+        existing_meta = dict(existing_layer.file_metadata or {})
+        existing_meta["source_file"] = source_file_meta
+        await layer_repo.update(
+            layer_id=layer_id,
+            layer_type=LayerType.geojson,
+            tile_url_template=tile_url_template,
+            file_metadata=existing_meta,
+            bbox_west=bbox[0] if bbox else None,
+            bbox_south=bbox[1] if bbox else None,
+            bbox_east=bbox[2] if bbox else None,
+            bbox_north=bbox[3] if bbox else None,
+        )
+    else:
+        layer = Layer(
+            id=layer_id,
+            upload_session_id=upload_id,
+            code=slugify(session.filename),
+            layer_type=LayerType.geojson,
+            filename=session.filename,
+            file_type='vector',
+            tile_url_template=tile_url_template,
+            file_metadata={"source_file": source_file_meta},
+            bbox_west=bbox[0] if bbox else None,
+            bbox_south=bbox[1] if bbox else None,
+            bbox_east=bbox[2] if bbox else None,
+            bbox_north=bbox[3] if bbox else None,
+        )
+        await layer_repo.create(layer)
+
+    await repo.set_status(upload_id, JobStatus.done)
+
+    # Sync to CSW catalog
+    from app.infrastructure.services.csw_sync import sync_layer
+    await asyncio.to_thread(sync_layer, layer if not existing_layer else existing_layer)
+
+    return {
+        "message": "Layer saved",
+        "upload_id": upload_id,
+        "layer_id": layer_id,
+        "layer_type": LayerType.geojson,
+        "tile_url_template": tile_url_template,
+        "status": "done",
     }
 
 

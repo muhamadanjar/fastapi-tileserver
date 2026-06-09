@@ -143,6 +143,18 @@ Database tables stored in PostgreSQL (or configured DB backend), not as files.
 | `.zip` (containing `.shp`) | vector |
 | `.tif`, `.tiff`, `.img`, `.png`, `.jpg` | raster |
 
+
+
+### Geoportal Layers Types
+- ShapeFile (Zip) → (Vector Tile, Raster Tile) → Save Layer
+- Raster (TIFF, GeoTIFF) → (Raster Tile) → Save Layer
+- GeoJSON → Save Layer
+- KML → Convert to GeoJSON → (Vector Tile, Raster Tile) → Save Layer
+- WMS → Save Layer (as External/Remote)
+- WMTS → Save Layer (as External/Remote)
+- WFS → Save Layer (as External/Remote)
+- Any Type ArcGis → (as External/Remote)
+
 ### Environment variables
 
 | Variable | Default | Description |

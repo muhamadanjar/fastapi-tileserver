@@ -1,6 +1,7 @@
 import shutil
 import zipfile
 import uuid
+import json
 from pathlib import Path
 from typing import Tuple
 
@@ -53,15 +54,36 @@ class FileService:
         return shp_files[0]
 
     @staticmethod
+    def convert_kml_to_geojson(kml_path: Path) -> Path:
+        """Convert KML to GeoJSON, save as .geojson, return new path."""
+        try:
+            import geopandas as gpd
+            gdf = gpd.read_file(kml_path, driver='KML')
+            geojson_data = json.loads(gdf.to_json())
+
+            geojson_path = kml_path.with_suffix('.geojson')
+            with open(geojson_path, 'w') as f:
+                json.dump(geojson_data, f)
+
+            kml_path.unlink(missing_ok=True)
+            return geojson_path
+        except Exception as e:
+            raise FileSaveError(f"KML conversion failed: {str(e)}")
+
+    @staticmethod
     def prepare_source_path(saved_path: Path) -> Tuple[Path, str]:
         """
         Given a saved file path, returns the actual tiling source path and file_type.
         For ZIP files, extracts and returns the .shp path.
+        For KML files, converts to GeoJSON and returns .geojson path.
         Reusable by both direct upload and chunked assembly flows.
         """
         file_type = FileService.allowed_file(saved_path.name)
         if saved_path.suffix.lower() == ".zip":
             return FileService.extract_zip(saved_path), "vector"
+        elif saved_path.suffix.lower() == ".kml":
+            geojson_path = FileService.convert_kml_to_geojson(saved_path)
+            return geojson_path, "vector"
         return saved_path, file_type
 
     async def save_upload(self, file: UploadFile) -> Tuple[Path, str]:

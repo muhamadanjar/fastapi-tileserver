@@ -1,4 +1,6 @@
 import asyncio
+import os
+import shutil
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,6 +16,7 @@ from app.infrastructure.db.repository import LayerRepository, UploadSessionRepos
 from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_csw
 from app.core.utils import slugify
 from app.core.response import APIResponse
+from app.core.config import settings
 from app.workers.tasks import process_tiling_task
 
 router = APIRouter(prefix="/layers", tags=["layers"])
@@ -71,7 +74,7 @@ async def list_layers(
             status=status,
             created_at=layer.created_at,
             bbox=[layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north] if all([layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]) else None,
-            # file_metadata=layer.file_metadata,
+            file_metadata=layer.file_metadata,
         ))
 
     return APIResponse.success(
@@ -310,15 +313,94 @@ async def add_external_layer(
     )
 
 
+def _fmt_size(size_bytes: int) -> str:
+    """Format bytes to human-readable size."""
+    for unit in ('B', 'KB', 'MB', 'GB'):
+        if size_bytes < 1024:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024
+    return f"{size_bytes:.1f} TB"
+
+
+@router.get("/{layer_id}/delete-preview")
+async def get_delete_preview(
+    layer_id: str,
+    layer_repo: LayerRepository = Depends(_get_layer_repo),
+    session_repo: UploadSessionRepository = Depends(_get_session_repo),
+):
+    layer = await layer_repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+
+    items = []
+
+    # DB record — always present
+    items.append({"type": "db_record", "label": "Layer record", "detail": layer.filename})
+
+    # Tile files on disk
+    tile_dir = Path(settings.TILES_DIR) / layer_id
+    if tile_dir.exists():
+        try:
+            size = sum(f.stat().st_size for f in tile_dir.rglob('*') if f.is_file())
+            items.append({"type": "tile_files", "label": "Tile files", "detail": _fmt_size(size)})
+        except OSError:
+            pass
+
+    # Source file from UploadSession
+    if layer.upload_session_id:
+        session = await session_repo.get_by_id(layer.upload_session_id)
+        if session and session.final_path and os.path.exists(session.final_path):
+            try:
+                size = os.path.getsize(session.final_path)
+                items.append({"type": "source_file", "label": "Source file", "detail": f"{session.filename} ({_fmt_size(size)})"})
+            except OSError:
+                pass
+
+    # CSW record — always present
+    items.append({"type": "csw_record", "label": "CSW catalog record", "detail": layer_id})
+
+    return {"layer_id": layer_id, "filename": layer.filename, "items": items}
+
+
 @router.delete("/{layer_id}")
 async def delete_layer(
     layer_id: str,
-    repo: LayerRepository = Depends(_get_layer_repo),
+    layer_repo: LayerRepository = Depends(_get_layer_repo),
+    session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
-    deleted = await repo.delete(layer_id)
-    if not deleted:
+    layer = await layer_repo.get_by_id(layer_id)
+    if not layer:
         raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+
+    # Store upload_session_id before deleting layer (FK constraint)
+    upload_session_id = layer.upload_session_id
+    upload_session = None
+    if upload_session_id:
+        upload_session = await session_repo.get_by_id(upload_session_id)
+
+    # 1. Delete tile files from disk
+    tile_dir = Path(settings.TILES_DIR) / layer_id
+    if tile_dir.exists():
+        try:
+            shutil.rmtree(tile_dir, ignore_errors=True)
+        except OSError:
+            pass
+
+    # 2. Delete DB row first (removes FK constraint to UploadSession)
+    await layer_repo.delete(layer_id)
+
+    # 3. Delete source file + UploadSession
+    if upload_session:
+        if upload_session.final_path and os.path.exists(upload_session.final_path):
+            try:
+                os.unlink(upload_session.final_path)
+            except OSError:
+                pass
+        await session_repo.delete(upload_session_id)
+
+    # 4. Delete CSW record
     await asyncio.to_thread(delete_layer_from_csw, layer_id)
+
     return {"message": "Layer deleted successfully"}
 
 
