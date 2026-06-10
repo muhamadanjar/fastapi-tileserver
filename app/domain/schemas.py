@@ -68,6 +68,7 @@ class JobStatusResponse(BaseModel):
 class LayerResponse(BaseModel):
     id: str
     upload_session_id: Optional[str] = None
+    code: Optional[str] = None
     layer_type: str = "tile"
     filename: str
     file_type: str

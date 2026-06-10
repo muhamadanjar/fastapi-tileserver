@@ -8,7 +8,7 @@ from app.infrastructure.db.repository import SyncUploadSessionRepository, SyncLa
 from app.infrastructure.services.tiling_service import TilingService
 from app.infrastructure.services.csw_sync import sync_layer
 from app.domain.models import JobStatus, Layer
-from app.core.utils import slugify
+from app.core.utils import slugify, generate_unique_code_sync
 
 
 def _make_progress_callback(layer_id: str):
@@ -42,6 +42,10 @@ def _make_progress_callback(layer_id: str):
 def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, source_path: str, output_format: str = "raster", max_zoom: int = None):
     with db.get_session() as session:
         repo = SyncUploadSessionRepository(session)
+        current = repo.get_by_id(upload_id)
+        if current and current.status == JobStatus.cancelled:
+            print(f"[tiling] Task {upload_id} cancelled before start, aborting.")
+            return
         repo.set_status(upload_id, JobStatus.processing)
 
         # Create placeholder Layer at start so progress callbacks can update it
@@ -50,10 +54,13 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
             if not layer_repo.get_by_id(layer_id):
                 upload_session = repo.get_by_id(upload_id)
                 if upload_session:
+                    filename_without_ext = Path(upload_session.filename).stem
+                    base_code = slugify(filename_without_ext)
+                    unique_code = generate_unique_code_sync(base_code, layer_repo.code_exists)
                     placeholder = Layer(
                         id=layer_id,
                         upload_session_id=upload_id,
-                        code=slugify(upload_session.filename),
+                        code=unique_code,
                         filename=upload_session.filename,
                         file_type=file_type,
                         layer_type="tile",
@@ -118,10 +125,13 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
                     except Exception:
                         pass
                 else:
+                    filename_without_ext = Path(upload_session.filename).stem
+                    base_code = slugify(filename_without_ext)
+                    unique_code = generate_unique_code_sync(base_code, layer_repo.code_exists)
                     layer = Layer(
                         id=layer_id,
                         upload_session_id=upload_id,
-                        code=slugify(upload_session.filename),
+                        code=unique_code,
                         filename=upload_session.filename,
                         file_type=file_type,
                         layer_type=layer_type,
@@ -148,8 +158,11 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
 
         with db.get_session() as session:
             repo = SyncUploadSessionRepository(session)
-            repo.set_status(upload_id, JobStatus.failed, error_message=str(exc))
-        raise self.retry(exc=exc, countdown=5)
+            current = repo.get_by_id(upload_id)
+            if current and current.status != JobStatus.cancelled:
+                repo.set_status(upload_id, JobStatus.failed, error_message=str(exc))
+        if not isinstance(exc, SystemExit):
+            raise self.retry(exc=exc, countdown=5)
 
 
 @celery_app.task(bind=True, max_retries=3)

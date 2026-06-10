@@ -32,7 +32,7 @@ uvicorn app.main:app --reload --port=8080
 
 5. Run Celery worker (terminal 2):
 ```bash
-celery -A app.workers.celery_app worker --loglevel=info
+celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
 ```
 
 API docs available at `http://localhost:8080/docs`

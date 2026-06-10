@@ -21,6 +21,7 @@ from app.domain.schemas import (
     UploadInitResponse,
 )
 from app.core.config import settings
+from app.core.utils import generate_unique_code
 from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import UploadSessionRepository, LayerRepository
 from app.usecases.init_chunked_upload import InitChunkedUploadUseCase
@@ -87,7 +88,7 @@ async def trigger_tiling(
     fmt = output_format if output_format else session.output_format
     zoom = max_zoom if max_zoom is not None else session.max_zoom
 
-    process_tiling_task.delay(
+    task = process_tiling_task.delay(
         upload_id=upload_id,
         layer_id=layer_id,
         file_type=file_type,
@@ -95,6 +96,7 @@ async def trigger_tiling(
         output_format=fmt,
         max_zoom=zoom,
     )
+    await repo.set_task_id(upload_id, task.id)
 
     return {
         "message": "Tiling started",
@@ -134,7 +136,9 @@ async def publish_to_geoserver(
     await repo.set_status(upload_id, JobStatus.processing)
 
     layer_id = session.layer_id
-    store_name = layer_id
+    filename_without_ext = Path(session.filename).stem
+    base_code = slugify(filename_without_ext)
+    code = await generate_unique_code(base_code, layer_repo.code_exists)
 
     try:
         svc = GeoServerService(
@@ -143,14 +147,15 @@ async def publish_to_geoserver(
             password=settings.GEOSERVER_PASSWORD,
             workspace=settings.GEOSERVER_WORKSPACE,
         )
-        result = svc.publish_shp(session.final_path, store_name)
+        result = svc.publish_shp(session.final_path, code)
     except Exception as exc:
         await repo.set_status(upload_id, JobStatus.failed, str(exc))
         raise HTTPException(status_code=502, detail=f"GeoServer publish failed: {exc}")
 
     from app.infrastructure.services.bbox_extractor import extract_bbox_from_file, get_crs_from_file
 
-    bbox = extract_bbox_from_file(session.final_path)
+    # bbox: prioritas dari file lokal, fallback hasil recalculate GeoServer
+    bbox = extract_bbox_from_file(session.final_path) or result.get("bbox")
     crs_str = get_crs_from_file(session.final_path) if bbox else None
 
     geoserver_meta = {**result}
@@ -165,6 +170,7 @@ async def publish_to_geoserver(
             tile_url_template=result["wms_url"],
             file_metadata={
                 "geoserver": geoserver_meta,
+                "layers": geoserver_meta.get("layer_name"),
             },
             bbox_west=bbox[0] if bbox else None,
             bbox_south=bbox[1] if bbox else None,
@@ -175,12 +181,12 @@ async def publish_to_geoserver(
         layer = Layer(
             id=layer_id,
             upload_session_id=upload_id,
-            code=slugify(session.filename),
+            code=code,
             layer_type=LayerType.wms,
             filename=session.filename,
             file_type='external',
             tile_url_template=result["wms_url"],
-            file_metadata={"geoserver": geoserver_meta},
+            file_metadata={"geoserver": geoserver_meta, "layers": geoserver_meta.get("layer_name")},
             bbox_west=bbox[0] if bbox else None,
             bbox_south=bbox[1] if bbox else None,
             bbox_east=bbox[2] if bbox else None,
@@ -212,11 +218,11 @@ async def save_geojson(
         raise HTTPException(status_code=404, detail="Upload session not found")
 
     filename_lower = session.filename.lower()
-    allowed_exts = ('.geojson', '.json')
+    allowed_exts = ('.geojson', '.json', '.kml')
     if not any(filename_lower.endswith(ext) for ext in allowed_exts):
         raise HTTPException(
             status_code=400,
-            detail=f"Save layer only supports .geojson/.json files, got '{session.filename}'",
+            detail=f"Save layer only supports .geojson/.json/.kml files, got '{session.filename}'",
         )
 
     allowed_statuses = {JobStatus.uploaded, JobStatus.failed}
@@ -229,8 +235,16 @@ async def save_geojson(
     if not session.final_path or not os.path.exists(session.final_path):
         raise HTTPException(status_code=400, detail="Assembled file not found on disk")
 
+    is_kml = filename_lower.endswith('.kml')
     layer_id = session.layer_id
-    file_ext = '.geojson' if filename_lower.endswith('.geojson') else '.json'
+
+    # KML is pre-converted to GeoJSON by prepare_source_path(); always store as .geojson
+    if is_kml or filename_lower.endswith('.geojson'):
+        file_ext = '.geojson'
+    else:
+        file_ext = '.json'
+
+    determined_layer_type = LayerType.kml if is_kml else LayerType.geojson
 
     # Create layer directory if it doesn't exist
     layer_dir = Path(settings.TILES_DIR) / layer_id
@@ -259,7 +273,7 @@ async def save_geojson(
         existing_meta["source_file"] = source_file_meta
         await layer_repo.update(
             layer_id=layer_id,
-            layer_type=LayerType.geojson,
+            layer_type=determined_layer_type,
             tile_url_template=tile_url_template,
             file_metadata=existing_meta,
             bbox_west=bbox[0] if bbox else None,
@@ -267,12 +281,13 @@ async def save_geojson(
             bbox_east=bbox[2] if bbox else None,
             bbox_north=bbox[3] if bbox else None,
         )
+        saved_layer = existing_layer
     else:
-        layer = Layer(
+        saved_layer = Layer(
             id=layer_id,
             upload_session_id=upload_id,
             code=slugify(session.filename),
-            layer_type=LayerType.geojson,
+            layer_type=determined_layer_type,
             filename=session.filename,
             file_type='vector',
             tile_url_template=tile_url_template,
@@ -282,19 +297,19 @@ async def save_geojson(
             bbox_east=bbox[2] if bbox else None,
             bbox_north=bbox[3] if bbox else None,
         )
-        await layer_repo.create(layer)
+        await layer_repo.create(saved_layer)
 
     await repo.set_status(upload_id, JobStatus.done)
 
     # Sync to CSW catalog
     from app.infrastructure.services.csw_sync import sync_layer
-    await asyncio.to_thread(sync_layer, layer if not existing_layer else existing_layer)
+    await asyncio.to_thread(sync_layer, saved_layer)
 
     return {
         "message": "Layer saved",
         "upload_id": upload_id,
         "layer_id": layer_id,
-        "layer_type": LayerType.geojson,
+        "layer_type": determined_layer_type,
         "tile_url_template": tile_url_template,
         "status": "done",
     }
@@ -365,6 +380,34 @@ async def retry_tiling(
         max_zoom=session.max_zoom,
     )
     return {"message": "Tiling re-queued", "upload_id": upload_id, "layer_id": session.layer_id}
+
+
+@router.post("/{upload_id}/cancel")
+async def cancel_tiling(
+    upload_id: str,
+    repo: UploadSessionRepository = Depends(_get_repo),
+):
+    session = await repo.get_by_id(upload_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+
+    cancellable = {JobStatus.uploaded, JobStatus.pending, JobStatus.processing}
+    if session.status not in cancellable:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot cancel from status '{session.status}'."
+        )
+
+    if session.celery_task_id:
+        from app.workers.celery_app import celery_app
+        celery_app.control.revoke(session.celery_task_id, terminate=True, signal='SIGTERM')
+
+    await repo.set_status(upload_id, JobStatus.cancelled)
+
+    return APIResponse.success(
+        message="Tiling cancelled",
+        data={"upload_id": upload_id, "status": "cancelled"}
+    )
 
 
 @router.post("/{upload_id}/{chunk_index}", response_model=ChunkUploadResponse)

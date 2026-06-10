@@ -40,3 +40,15 @@ class ChunkUploadError(TileServerException):
     def __init__(self, detail: str):
         self.message = f"Chunk upload error: {detail}"
         super().__init__(self.message)
+
+
+class LayerNotFoundError(TileServerException):
+    def __init__(self, layer_id: str):
+        self.message = f"Layer '{layer_id}' not found."
+        super().__init__(self.message)
+
+
+class LayerFieldsUnavailableError(TileServerException):
+    def __init__(self, layer_type: str, reason: str = None):
+        self.message = reason or f"Fields not available for layer type '{layer_type}'."
+        super().__init__(self.message)

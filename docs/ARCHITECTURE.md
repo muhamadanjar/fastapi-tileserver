@@ -114,6 +114,28 @@ async def execute(file, output_format, max_zoom) -> TilingJobResponse:
     # 4. Return TilingJobResponse
 ```
 
+**QueryLayerFeaturesUseCase** (`getinfo_layer.py`)
+```python
+async def execute(layer_id, lon, lat) -> FeatureQueryResponse:
+    # 1. Fetch layer, dispatch per type:
+    #    - vector/raster lokal → geopandas/rasterio pada source file
+    #    - external wms/wmts/wfs/esri → proxy GetFeatureInfo/GetFeature/identify
+    # 2. Apply field configs (file_metadata.fields) — visible only
+```
+
+**GetLayerFieldsUseCase** (`get_layer_fields.py`)
+```python
+async def execute(layer_id) -> LayerFieldsResponse:
+    # 1. Fetch layer; raise LayerNotFoundError jika tidak ada
+    # 2. Resolve source path dari upload session
+    # 3. Per tipe:
+    #    - vector lokal  → kolom file (geopandas)
+    #    - raster lokal  → band_1..band_N (rasterio)
+    #    - external WMS  → source lokal kalau ada (publish flow),
+    #                      else remote WFS DescribeFeatureType
+    #    - external lain → raise LayerFieldsUnavailableError
+```
+
 ---
 
 ### Services (`infrastructure/services/`)

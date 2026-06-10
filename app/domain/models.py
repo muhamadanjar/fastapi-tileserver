@@ -14,6 +14,7 @@ class JobStatus(str, enum.Enum):
     done = "done"
     failed = "failed"
     expired = "expired"
+    cancelled = "cancelled"
 
 class LayerType(str, enum.Enum):
     tile = "tile"
@@ -51,6 +52,7 @@ class UploadSession(SQLModel, table=True):
     total_chunks: int = Field(default=0)
     uploaded_chunks: int = Field(default=0)
     chunk_size: int = Field(default=0)
+    celery_task_id: Optional[str] = Field(default=None)
     expires_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))

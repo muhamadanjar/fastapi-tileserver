@@ -45,6 +45,65 @@ Comprehensive documentation for FastAPI geospatial tile service.
 **...scale the system**
 → [Development: Scale Celery Workers](DEVELOPMENT.md#scale-celery-workers)
 
+**...see recent changes**
+→ [Recent Updates](RECENT_UPDATES.md)
+
+**...query features from a layer**
+→ [Feature Query Guide](FEATURE_QUERY.md)
+
+**...cancel a tiling task**
+→ [Recent Updates: Cancel Task](RECENT_UPDATES.md#1-cancel-task-feature)
+
+## Recent Implementation (2026-06-10)
+
+### ✅ Cancel Task Feature
+- New endpoint: `POST /uploads/{upload_id}/cancel`
+- New status: `JobStatus.cancelled` enum value
+- Celery revoke + cooperative DB check
+- Store task ID in `UploadSession.celery_task_id`
+- Migration: `0003_add_celery_task_id_to_upload_sessions.py`
+
+### ✅ Layer Code Uniqueness
+- Remove file extension from code (slug filename only)
+- Append `-1`, `-2`, etc. if code already exists
+- Usecase: `generate_unique_code()` + `generate_unique_code_sync()`
+- Applied to: external layers, GeoServer publish, tiling tasks
+
+### ✅ GeoServer Store Name Fix
+- Changed from `store_name = layer_id` (UUID) to `store_name = code` (slug)
+- Rename .shp files in zip to match store_name
+- Result: GeoServer layer_name = "workspace:code" (consistent with DB)
+- Service: `GeoServerService._to_zip()` param `rename_to`
+
+### ✅ WMS GetFeatureInfo Support
+- New: Query endpoint now handle WMS layers
+- Proxy WMS GetFeatureInfo requests
+- Support: WMS 1.1.1 & 1.3.0
+- Response format: same as local vector queries
+
+### ✅ QueryLayerFeaturesUseCase Refactoring
+- Centralized feature query logic
+- File: `app/usecases/getinfo_layer.py`
+- Support: vector (GeoPandas), raster (Rasterio), WMS, WFS
+- Endpoint: `/layers/{layer_id}/features?lon=X&lat=Y`
+- Removed inline query logic from endpoint
+
+### ✅ WMS GetFeatureInfo Fix
+- BBOX query ±0.005° (sebelumnya ±1° — fitur kecil sub-pixel, tidak match)
+- WMS 1.3.0 + EPSG:4326: bbox axis order lat,lon (per spec)
+- Detail: [Recent Updates §5](RECENT_UPDATES.md#5-wms-getfeatureinfo-fix)
+
+### ✅ GetLayerFieldsUseCase + WMS Fields
+- File: `app/usecases/get_layer_fields.py` (NEW)
+- `GET /layers/{id}/fields` support layer WMS external (lokal / WFS DescribeFeatureType)
+- Exceptions baru: `LayerNotFoundError`, `LayerFieldsUnavailableError`
+- Detail: [Recent Updates §6](RECENT_UPDATES.md#6-layer-fields-untuk-wms--refactor-ke-usecase)
+
+### ✅ GeoServer Publish BBox Recalculate
+- `GeoServerService._recalculate_bbox()` — REST `recalculate=nativebbox,latlonbbox`
+- DB bbox fallback dari GeoServer kalau extract file lokal gagal
+- Detail: [Recent Updates §7](RECENT_UPDATES.md#7-geoserver-publish--bbox-recalculate)
+
 ## Architecture Overview
 
 ```
@@ -60,7 +119,9 @@ Domain (models, schemas)
 Data flows:
 - **Upload** → `UploadSession` created with status=`uploaded`
 - **Tiling** → Celery task queued, background processing, status → `done` or `failed`
-- **GeoServer** → SHP published to external GeoServer instance
+- **Cancel** → Revoke task + set status=`cancelled`
+- **GeoServer** → SHP published, store_name = code (slug)
+- **Query Features** → UseCase dispatch by layer type (vector/raster/WMS/WFS)
 
 ## Key Concepts
 
@@ -92,7 +153,9 @@ docs/
   ├── API.md              # Endpoint reference + examples
   ├── ARCHITECTURE.md     # Component breakdown + data flows
   ├── SETUP.md            # Installation + configuration
-  └── DEVELOPMENT.md      # Contributing guide + debugging
+  ├── DEVELOPMENT.md      # Contributing guide + debugging
+  ├── RECENT_UPDATES.md   # Latest implementation (2026-06-10)
+  └── FEATURE_QUERY.md    # Feature query details
 ```
 
 ## Stack

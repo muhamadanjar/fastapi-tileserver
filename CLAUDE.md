@@ -56,6 +56,8 @@ Clean Architecture layered structure:
   - `ProcessUploadUseCase` — saves file, persists `UploadSession` with status `uploaded` (no auto-tiling).
   - `InitChunkedUploadUseCase` — creates upload session + chunk directory.
   - `ReceiveChunkUseCase` — stores chunk part, assembles on last chunk, sets status `uploaded` (no auto-tiling).
+  - `QueryLayerFeaturesUseCase` (`getinfo_layer.py`) — get info / click query, dispatch per layer type (vector/raster/WMS/WMTS/WFS/Esri), apply `file_metadata.fields` config. WMS GetFeatureInfo: bbox ±0.005°, 1.3.0 axis order lat,lon.
+  - `GetLayerFieldsUseCase` (`get_layer_fields.py`) — field list untuk Field Settings: vector lokal (geopandas), raster (band list), external WMS (source lokal / WFS DescribeFeatureType). Raise `LayerNotFoundError`/`LayerFieldsUnavailableError` (404).
 - **`app/infrastructure/`** — Side effects:
   - `services/file_service.py` — `FileService`: save uploads, validate formats, extract ZIPs, `prepare_source_path()` reused by both flows.
   - `services/tiling_service.py` — `TilingService.process_tiling()`, `VectorTiler`, `RasterTiler`.
@@ -121,8 +123,11 @@ POST /api/v1/uploads/{upload_id}/geoserver
 2. Endpoint sets `UploadSession.status = processing`.
 3. `GeoServerService.publish_shp()` uploads to GeoServer via REST API.
 4. Creates workspace + datastore + featureType, returns WMS/WFS URLs.
-5. Layer record created with `layer_type=wms`, `tile_url_template=WMS_URL`, `file_metadata.geoserver` populated.
-6. Updates status to `done` or `failed`.
+5. `_recalculate_bbox()` — REST `PUT featuretypes/{store}.json?recalculate=nativebbox,latlonbbox`, lalu ambil `latLonBoundingBox` sebagai bbox hasil publish.
+6. Layer record created with `layer_type=wms`, `tile_url_template=WMS_URL`, `file_metadata.geoserver` populated. `Layer.bbox` = extract file lokal, fallback bbox GeoServer.
+7. Updates status to `done` or `failed`.
+
+**Catatan akses:** GeoServer GeoNode pakai GeoFence — butuh rule `ALLOW service=WMS` supaya GetMap/GetFeatureInfo anonim jalan (lihat `docs/RECENT_UPDATES.md` §9).
 
 ### Data directory layout
 
@@ -146,10 +151,13 @@ Database tables stored in PostgreSQL (or configured DB backend), not as files.
 
 
 ### Geoportal Layers Types
-- ShapeFile (Zip) → (Vector Tile, Raster Tile) → Save Layer
-- Raster (TIFF, GeoTIFF) → (Raster Tile) → Save Layer
-- GeoJSON → Save Layer
+- ShapeFile (Zip) → (Vector Tile, Raster Tile, Geoserver) → Save Layer
+- Raster (TIFF, GeoTIFF) → (Raster Tile, Geoserver) → Save Layer
+- GeoJSON/Json → Save Layer
+  - Tiling (Vector Tile, Raster Tile) → Save Layer
+  - Save Layer
 - KML → Convert to GeoJSON → (Vector Tile, Raster Tile) → Save Layer
+  - Save Layer
 - WMS → Save Layer (as External/Remote)
 - WMTS → Save Layer (as External/Remote)
 - WFS → Save Layer (as External/Remote)
@@ -285,3 +293,4 @@ docker ps | grep rabbitmq  # or check http://localhost:15672
 - **Commits are FORBIDDEN** — Claude must NOT run `git commit` under any circumstances
 - **Git read-only** — Only these operations are allowed: `git log`, `git status`, `git diff`, `git show`
 - **FORBIDDEN: `git commit`, `git push`, `git merge`, `git rebase`, `git reset`** — all git write operations are prohibited
+- **Documentation** doc always Store  in folder docs

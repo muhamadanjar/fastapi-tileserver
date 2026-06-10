@@ -1,4 +1,6 @@
 from logging.config import fileConfig
+import os
+import re
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
@@ -29,6 +31,43 @@ target_metadata = SQLModel.metadata
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
 
+def get_next_revision_id() -> str:
+    """Generate next sequential revision ID based on existing migrations."""
+    versions_dir = os.path.join(os.path.dirname(__file__), "versions")
+    if not os.path.exists(versions_dir):
+        return "0001"
+
+    # Find all migration files with numeric prefix
+    migration_files = [f for f in os.listdir(versions_dir) if f.endswith(".py") and not f.startswith("__")]
+
+    if not migration_files:
+        return "0001"
+
+    # Extract numeric prefix from filenames
+    numbers = []
+    for f in migration_files:
+        match = re.match(r"^(\d+)", f)
+        if match:
+            numbers.append(int(match.group(1)))
+
+    if not numbers:
+        return "0001"
+
+    # Get next number with leading zeros
+    next_num = max(numbers) + 1
+    return f"{next_num:04d}"
+
+def process_revision_directives(context, revision, directives):
+    """Assign sequential revision IDs to new migrations."""
+    if directives:
+        for directive in directives:
+            if directive.upgrade_ops.is_empty():
+                return
+            directive.revision = get_next_revision_id()
+            if directive.down_revision:
+                directive.down_revision = directive.down_revision
+            directive.branch_labels = None
+
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode.
@@ -48,6 +87,7 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
+        process_revision_directives=process_revision_directives,
     )
 
     with context.begin_transaction():
@@ -69,7 +109,9 @@ def run_migrations_online() -> None:
 
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata
+            connection=connection,
+            target_metadata=target_metadata,
+            process_revision_directives=process_revision_directives,
         )
 
         with context.begin_transaction():

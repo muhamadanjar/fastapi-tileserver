@@ -4,9 +4,6 @@ import shutil
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
-import geopandas as gpd
-import rasterio
-from shapely.geometry import Point
 import uuid
 
 from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse
@@ -14,10 +11,13 @@ from app.domain.models import Layer, JobStatus
 from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
 from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_csw
-from app.core.utils import slugify
+from app.core.utils import slugify, generate_unique_code
 from app.core.response import APIResponse
 from app.core.config import settings
 from app.workers.tasks import process_tiling_task
+from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError
+from app.usecases.getinfo_layer import QueryLayerFeaturesUseCase
+from app.usecases.get_layer_fields import GetLayerFieldsUseCase
 
 router = APIRouter(prefix="/layers", tags=["layers"])
 
@@ -67,6 +67,7 @@ async def list_layers(
         responses.append(LayerResponse(
             id=layer.id,
             upload_session_id=layer.upload_session_id,
+            code=layer.code,
             layer_type=layer.layer_type,
             filename=layer.filename,
             file_type=layer.file_type,
@@ -103,6 +104,7 @@ async def get_layer(
     return LayerResponse(
         id=layer.id,
         upload_session_id=layer.upload_session_id,
+        code=layer.code,
         layer_type=layer.layer_type,
         filename=layer.filename,
         file_type=layer.file_type,
@@ -158,6 +160,7 @@ async def patch_layer(
     return LayerResponse(
         id=updated.id,
         upload_session_id=updated.upload_session_id,
+        code=updated.code,
         layer_type=updated.layer_type,
         filename=updated.filename,
         file_type=updated.file_type,
@@ -277,9 +280,13 @@ async def add_external_layer(
     else:
         bbox_result = await asyncio.to_thread(extract_bbox, req.layer_type, req.source_url, req.params)
 
+    filename_without_ext = Path(req.filename).stem
+    base_code = slugify(filename_without_ext)
+    unique_code = await generate_unique_code(base_code, repo.code_exists)
+
     layer = Layer(
         id=str(uuid.uuid4()),
-        code=slugify(req.filename),
+        code=unique_code,
         filename=req.filename,
         file_type="external",
         layer_type=req.layer_type,
@@ -297,6 +304,7 @@ async def add_external_layer(
     return LayerResponse(
         id=created.id,
         upload_session_id=created.upload_session_id,
+        code=created.code,
         layer_type=created.layer_type,
         filename=created.filename,
         file_type=created.file_type,
@@ -410,71 +418,11 @@ async def get_layer_fields(
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
-    layer = await layer_repo.get_by_id(layer_id)
-    if not layer:
-        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
-
-    if not layer.upload_session_id:
-        raise HTTPException(status_code=404, detail="Source file not found.")
-
-    upload_session = await session_repo.get_by_id(layer.upload_session_id)
-    if not upload_session or not upload_session.final_path:
-        raise HTTPException(status_code=404, detail="Source file not found.")
-
-    source_path = Path(upload_session.final_path)
-    if not source_path.exists():
-        raise HTTPException(status_code=404, detail="Source file missing on disk.")
-
-    fields = []
-    if layer.file_type == 'vector':
-        gdf = gpd.read_file(source_path)
-        fields = gdf.columns.drop('geometry').tolist()
-    else:
-        with rasterio.open(source_path) as src:
-            fields = [f'band_{i}' for i in range(1, src.count + 1)]
-
-    return LayerFieldsResponse(layer_id=layer_id, fields=fields)
-
-
-def _query_vector(source_path: Path, lon: float, lat: float, field_configs: list | None = None) -> FeatureQueryResponse:
-    gdf = gpd.read_file(source_path)
-    if gdf.crs and gdf.crs.to_epsg() != 4326:
-        gdf = gdf.to_crs(epsg=4326)
-
-    point = Point(lon, lat)
-    matching = gdf[gdf.geometry.contains(point)]
-
-    features = []
-    for _, row in matching.iterrows():
-        props = row.drop(labels=['geometry']).to_dict()
-        cleaned = {
-            k: (v if isinstance(v, (str, int, float, bool, type(None))) else str(v))
-            for k, v in props.items()
-        }
-
-        if field_configs:
-            filtered = {}
-            for fc in field_configs:
-                if fc.get('visible', True) and fc['original'] in cleaned:
-                    key = fc.get('label') or fc['original']
-                    filtered[key] = cleaned[fc['original']]
-            features.append(filtered)
-        else:
-            features.append(cleaned)
-
-    return FeatureQueryResponse(type='vector', count=len(features), features=features)
-
-
-def _query_raster(source_path: Path, lon: float, lat: float) -> FeatureQueryResponse:
-    with rasterio.open(source_path) as src:
-        row, col = src.index(lon, lat)
-        if row < 0 or col < 0 or row >= src.height or col >= src.width:
-            return FeatureQueryResponse(type='raster', count=0, values={})
-
-        sample = list(src.sample([(lon, lat)]))[0]
-        values = {f'band_{i+1}': float(val) for i, val in enumerate(sample)}
-
-    return FeatureQueryResponse(type='raster', count=1, values=values)
+    usecase = GetLayerFieldsUseCase(layer_repo, session_repo)
+    try:
+        return await usecase.execute(layer_id)
+    except (LayerNotFoundError, LayerFieldsUnavailableError) as exc:
+        raise HTTPException(status_code=404, detail=exc.message)
 
 
 @router.get("/{layer_id}/features", response_model=FeatureQueryResponse)
@@ -485,23 +433,5 @@ async def query_features(
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
-    layer = await layer_repo.get_by_id(layer_id)
-    if not layer:
-        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
-
-    upload_session = await session_repo.get_by_id(layer.upload_session_id)
-    if not upload_session or not upload_session.final_path:
-        raise HTTPException(status_code=404, detail="Source file not found.")
-
-    source_path = Path(upload_session.final_path)
-    if not source_path.exists():
-        raise HTTPException(status_code=404, detail="Source file missing on disk.")
-
-    field_configs = None
-    if layer.file_metadata and 'fields' in layer.file_metadata:
-        field_configs = layer.file_metadata['fields']
-
-    if layer.file_type == 'vector':
-        return _query_vector(source_path, lon, lat, field_configs)
-    else:
-        return _query_raster(source_path, lon, lat)
+    usecase = QueryLayerFeaturesUseCase(layer_repo, session_repo)
+    return await usecase.execute(layer_id, lon, lat)

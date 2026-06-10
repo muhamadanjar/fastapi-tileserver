@@ -76,6 +76,13 @@ class UploadSessionRepository:
             self.session.add(session_obj)
             await self.session.commit()
 
+    async def set_task_id(self, upload_id: str, task_id: str) -> None:
+        session_obj = await self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.celery_task_id = task_id
+            self.session.add(session_obj)
+            await self.session.commit()
+
     async def delete(self, upload_id: str) -> bool:
         session_obj = await self.get_by_id(upload_id)
         if session_obj:
@@ -108,6 +115,13 @@ class SyncUploadSessionRepository:
             self.session.add(session_obj)
             self.session.commit()
 
+    def set_task_id(self, upload_id: str, task_id: str) -> None:
+        session_obj = self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.celery_task_id = task_id
+            self.session.add(session_obj)
+            self.session.commit()
+
 
 class SyncLayerRepository:
     """Synchronous variant for the worker process."""
@@ -137,6 +151,12 @@ class SyncLayerRepository:
             layer.updated_at = datetime.now(timezone.utc)
             self.session.add(layer)
             self.session.commit()
+
+    def code_exists(self, code: str) -> bool:
+        result = self.session.exec(
+            select(Layer).where(Layer.code == code)
+        )
+        return result.first() is not None
 
 
 class LayerRepository:
@@ -273,6 +293,12 @@ class LayerRepository:
         await self.session.commit()
         await self.session.refresh(layer)
         return layer
+
+    async def code_exists(self, code: str) -> bool:
+        result = await self.session.execute(
+            select(Layer).where(Layer.code == code)
+        )
+        return result.scalars().first() is not None
 
     async def delete(self, layer_id: str) -> bool:
         layer = await self.get_by_id(layer_id)

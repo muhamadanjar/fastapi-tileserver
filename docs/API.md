@@ -239,17 +239,38 @@ After completion (status = `done`), layer has:
 ```json
 {
   "layer_type": "wms",
-  "tile_url_template": "http://geoserver.example.com/geoserver/wms?...",
+  "tile_url_template": "http://geoserver.example.com/geoserver/tileserver/wms",
+  "bbox": [106.66, -6.57, 106.67, -6.56],
   "file_metadata": {
     "geoserver": {
-      "workspace": "layers",
-      "datastore": "layer-xyz",
-      "featuretype": "geom",
-      "wms_url": "http://...",
-      "wfs_url": "http://..."
-    }
+      "layer_name": "tileserver:layer-xyz",
+      "store_name": "layer-xyz",
+      "workspace": "tileserver",
+      "wms_url": "http://.../geoserver/tileserver/wms",
+      "wfs_url": "http://.../geoserver/tileserver/wfs",
+      "bbox": [106.66, -6.57, 106.67, -6.56],
+      "crs": "EPSG:4326"
+    },
+    "layers": "tileserver:layer-xyz"
   }
 }
+```
+
+**Bounding box (penting untuk tampil di peta):**
+- Setelah datastore dibuat, service memanggil REST
+  `PUT featuretypes/{store}.json?recalculate=nativebbox,latlonbbox` — paksa GeoServer
+  hitung ulang bbox featuretype (mencegah bbox kosong di GeoServer)
+- `Layer.bbox` di DB: prioritas extract dari file lokal, fallback `latLonBoundingBox`
+  hasil recalculate GeoServer
+- Tanpa bbox, frontend tidak bisa zoom-to-layer → layer terlihat "tidak muncul"
+
+**Akses anonim (GeoNode GeoServer / GeoFence):**
+GeoServer build GeoNode memakai GeoFence; tanpa rule, semua request OWS anonim
+ditolak (`LayerNotDefined`, GetCapabilities kosong). Perlu rule ALLOW service=WMS:
+```bash
+curl -u admin:geoserver -X POST -H "Content-Type: application/json" \
+  -d '{"Rule":{"priority":0,"access":"ALLOW","service":"WMS"}}' \
+  http://localhost:8001/geoserver/rest/geofence/rules
 ```
 
 **Error Responses:**
@@ -295,6 +316,43 @@ Fetch all layers (from dashboard or geoportal service). Not provided by tileserv
   }
 }
 ```
+
+### GET `/layers/{layer_id}/fields`
+
+Daftar field/atribut layer — dipakai dialog Field Settings di dashboard.
+Handler: `GetLayerFieldsUseCase` (`app/usecases/get_layer_fields.py`).
+
+**Sumber field per tipe layer:**
+
+| Tipe | Sumber |
+|---|---|
+| vector lokal (tile/mvt/geojson/kml) | kolom file sumber (geopandas) |
+| raster lokal | `band_1..band_N` (rasterio) |
+| external WMS (publish flow, source masih ada) | kolom file sumber lokal |
+| external WMS (registrasi manual) | remote WFS `DescribeFeatureType` (pola GeoServer); gagal → `fields: []` |
+| external lain (wmts/esri/...) | `404` |
+
+**Response (200):**
+```json
+{
+  "layer_id": "layer-xyz",
+  "fields": ["id", "kabupaten", "kecamatan", "desa", "luas_m"]
+}
+```
+
+**Error Responses:**
+- `404 Not Found` — layer tidak ada, source file hilang, atau tipe layer tidak didukung
+
+---
+
+### GET `/layers/{layer_id}/features?lon=&lat=`
+
+Query feature di koordinat (get info / click). Handler: `QueryLayerFeaturesUseCase`.
+
+**Catatan WMS GetFeatureInfo:**
+- BBOX query `±0.005°` di sekitar titik klik (resolusi ~2 m/pixel) — fitur kecil tetap match
+- WMS 1.3.0 + EPSG:4326 → bbox axis order **lat,lon**; 1.1.1 → lon,lat
+- Field config `file_metadata.fields` diterapkan ke semua tipe layer (visible only)
 
 ---
 
