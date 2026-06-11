@@ -60,20 +60,42 @@ def _validate_url_safety(url: str) -> bool:
 		return False
 
 
+def _is_valid_4326_bbox(bbox: BBox) -> bool:
+	"""Bbox harus dalam range WGS84 dan tidak degenerate.
+	Beberapa service Esri melaporkan extent sampah (mis. xmin=-400, wkid 4326)."""
+	west, south, east, north = bbox
+	return (
+		-180.0 <= west <= 180.0
+		and -180.0 <= east <= 180.0
+		and -90.0 <= south <= 90.0
+		and -90.0 <= north <= 90.0
+		and west < east
+		and south < north
+	)
+
+
 def extract_bbox(layer_type: str, source_url: str, params: Optional[dict] = None) -> Optional[BBox]:
 	"""
 	Dispatch bbox extraction berdasarkan layer_type.
-	Returns (west, south, east, north) in EPSG:4326, atau None jika gagal.
+	Returns (west, south, east, north) in EPSG:4326, atau None jika gagal/invalid.
 	"""
 	try:
 		if layer_type == "wms":
-			return _extract_wms_bbox(source_url, params)
+			bbox = _extract_wms_bbox(source_url, params)
 		elif layer_type == "wmts":
-			return _extract_wmts_bbox(source_url, params)
+			bbox = _extract_wmts_bbox(source_url, params)
 		elif layer_type in ("esri_mapserver", "esri_featureserver", "esri_imageserver", "esri_tileserver", "esri_vectortileserver"):
-			return _extract_esri_bbox(source_url, params)
+			bbox = _extract_esri_bbox(source_url, params)
 		else:
 			return None
+
+		if bbox and not _is_valid_4326_bbox(bbox):
+			logger.warning(
+				"bbox_out_of_range_rejected",
+				extra={"layer_type": layer_type, "url": source_url, "bbox": bbox}
+			)
+			return None
+		return bbox
 	except Exception as exc:
 		logger.warning(
 			"bbox_extraction_failed",
