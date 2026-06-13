@@ -111,3 +111,9 @@ class FeatureQueryResponse(BaseModel):
     count: int
     features: Optional[list[dict]] = None
     values: Optional[dict[str, float]] = None
+
+
+class FieldUniqueValuesResponse(BaseModel):
+    layer_id: str
+    field_name: str
+    values: list[str]

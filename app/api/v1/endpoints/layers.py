@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 import uuid
 
-from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse
+from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse
 from app.domain.models import Layer, JobStatus
 from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
@@ -18,6 +18,7 @@ from app.workers.tasks import process_tiling_task, download_esri_layer_task
 from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError
 from app.usecases.getinfo_layer import QueryLayerFeaturesUseCase
 from app.usecases.get_layer_fields import GetLayerFieldsUseCase
+from app.usecases.get_field_unique_values import GetFieldUniqueValuesUseCase
 
 router = APIRouter(prefix="/layers", tags=["layers"])
 
@@ -531,6 +532,20 @@ async def get_layer_fields(
     usecase = GetLayerFieldsUseCase(layer_repo, session_repo)
     try:
         return await usecase.execute(layer_id)
+    except (LayerNotFoundError, LayerFieldsUnavailableError) as exc:
+        raise HTTPException(status_code=404, detail=exc.message)
+
+
+@router.get("/{layer_id}/fields/{field_name}/values", response_model=FieldUniqueValuesResponse)
+async def get_field_unique_values(
+    layer_id: str,
+    field_name: str,
+    layer_repo: LayerRepository = Depends(_get_layer_repo),
+    session_repo: UploadSessionRepository = Depends(_get_session_repo),
+):
+    usecase = GetFieldUniqueValuesUseCase(layer_repo, session_repo)
+    try:
+        return await usecase.execute(layer_id, field_name)
     except (LayerNotFoundError, LayerFieldsUnavailableError) as exc:
         raise HTTPException(status_code=404, detail=exc.message)
 
