@@ -152,9 +152,11 @@ def esri_json_to_geojson_features(data: dict) -> List[dict]:
             if geometry_type == "esriGeometryPoint" and geom.get("x") is not None:
                 gj_geom = {"type": "Point", "coordinates": [geom["x"], geom["y"]]}
             elif geometry_type == "esriGeometryMultipoint":
-                gj_geom = {"type": "MultiPoint", "coordinates": geom.get("points") or []}
+                pts = [p for p in (geom.get("points") or []) if p is not None and all(c is not None for c in p)]
+                gj_geom = {"type": "MultiPoint", "coordinates": pts}
             elif geometry_type == "esriGeometryPolyline":
-                gj_geom = {"type": "MultiLineString", "coordinates": geom.get("paths") or []}
+                paths = [_clean_ring(p) for p in (geom.get("paths") or [])]
+                gj_geom = {"type": "MultiLineString", "coordinates": [p for p in paths if len(p) >= 2]}
             elif geometry_type == "esriGeometryPolygon":
                 gj_geom = _rings_to_geojson_polygon(geom.get("rings") or [])
         features.append({
@@ -163,6 +165,11 @@ def esri_json_to_geojson_features(data: dict) -> List[dict]:
             "properties": feat.get("attributes") or {},
         })
     return features
+
+
+def _clean_ring(ring: List) -> List:
+    """Drop points with any None coordinate — Esri servers sometimes emit nulls."""
+    return [pt for pt in ring if pt is not None and all(c is not None for c in pt)]
 
 
 def _ring_signed_area(ring: List[List[float]]) -> float:
@@ -181,6 +188,7 @@ def _rings_to_geojson_polygon(rings: List[List[List[float]]]) -> Optional[dict]:
     polygons: List[List[List[List[float]]]] = []
     holes: List[List[List[float]]] = []
     for ring in rings:
+        ring = _clean_ring(ring)
         if len(ring) < 4:
             continue
         if _ring_signed_area(ring) <= 0:
@@ -254,12 +262,28 @@ def _write_geojson(features: List[dict], path: Path) -> None:
         json.dump(collection, fh, ensure_ascii=False)
 
 
+def _geom_has_none_coords(geom: Optional[dict]) -> bool:
+    """Return True if any coordinate value inside the geometry is None."""
+    if not geom:
+        return False
+    def _check(obj) -> bool:
+        if obj is None:
+            return True
+        if isinstance(obj, list):
+            return any(_check(x) for x in obj)
+        return False
+    return _check(geom.get("coordinates"))
+
+
 def _write_shapefile_zip(features: List[dict], shp_dir: Path, slug: str) -> Optional[str]:
     """Write features to a shapefile and zip the sidecar files. Returns the
     zip path or None when no valid geometries exist."""
     import geopandas as gpd
 
-    valid = [f for f in features if f.get("geometry")]
+    valid = [
+        f for f in features
+        if f.get("geometry") and not _geom_has_none_coords(f["geometry"])
+    ]
     if not valid:
         return None
 
@@ -277,6 +301,18 @@ def _write_shapefile_zip(features: List[dict], shp_dir: Path, slug: str) -> Opti
     elif geom_types == {"LineString", "MultiLineString"}:
         gdf.geometry = gdf.geometry.apply(
             lambda g: MultiLineString([g]) if g.geom_type == "LineString" else g)
+
+    # Shapefile driver cannot handle None in numeric columns — sanitize before write
+    import numpy as np
+    import pandas as pd
+
+    for col in gdf.columns:
+        if col == "geometry":
+            continue
+        if pd.api.types.is_numeric_dtype(gdf[col]):
+            gdf[col] = gdf[col].fillna(np.nan)
+        elif gdf[col].dtype == object:
+            gdf[col] = gdf[col].fillna("")
 
     shp_dir.mkdir(parents=True, exist_ok=True)
     shp_path = shp_dir / f"{slug}.shp"
