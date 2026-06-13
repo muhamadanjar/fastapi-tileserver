@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     UPLOAD_DIR: Path = BASE_DIR / "data" / "uploads"
     TILES_DIR: Path = BASE_DIR / "data" / "tiles"
     CHUNKS_DIR: Path = BASE_DIR / "data" / "chunks"
+    DOWNLOAD_DIR: Path = BASE_DIR / "data" / "download"
 
     # Database
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -76,3 +77,4 @@ settings = get_settings()
 settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 settings.TILES_DIR.mkdir(parents=True, exist_ok=True)
 settings.CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
+settings.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)

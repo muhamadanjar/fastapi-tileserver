@@ -59,6 +59,7 @@ app.add_middleware(
 
 app.include_router(mvt_router)
 app.mount("/tiles", StaticFiles(directory=settings.TILES_DIR), name="tiles")
+app.mount("/downloads", StaticFiles(directory=settings.DOWNLOAD_DIR), name="downloads")
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
 

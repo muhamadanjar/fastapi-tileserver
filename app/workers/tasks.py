@@ -165,6 +165,99 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
             raise self.retry(exc=exc, countdown=5)
 
 
+def _make_download_progress_callback(layer_id: str):
+    from app.infrastructure.services.esri_downloader import DownloadCancelled
+
+    def callback(progress: dict) -> None:
+        with db.get_session() as session:
+            repo = SyncLayerRepository(session)
+            current = repo.get_download_progress(layer_id) or {}
+            if current.get("status") == "cancelled":
+                raise DownloadCancelled(f"Download for layer {layer_id} cancelled")
+
+            sub_total = progress.get("sublayers_total") or 1
+            sub_done = progress.get("sublayers_done") or 0
+            feat_total = progress.get("features_total") or 0
+            feat_done = progress.get("features_done") or 0
+            sub_fraction = (feat_done / feat_total) if feat_total else 0
+            percent = int(((sub_done + min(sub_fraction, 1)) / sub_total) * 100) if sub_total else 0
+            payload = {
+                **progress,
+                "task_id": current.get("task_id"),
+                "started_at": current.get("started_at"),
+                "percent": min(percent, 99),
+                "status": "processing",
+            }
+            repo.update_download_progress(layer_id, payload)
+            print(f"[download] {layer_id}: {payload['percent']}% ({progress.get('current_sublayer')})")
+
+    return callback
+
+
+@celery_app.task(bind=True, max_retries=1)
+def download_esri_layer_task(self, layer_id: str):
+    from app.infrastructure.services.esri_downloader import (
+        DownloadCancelled, EsriDownloadError, download_service,
+    )
+    from app.core.config import settings
+
+    with db.get_session() as session:
+        repo = SyncLayerRepository(session)
+        layer = repo.get_by_id(layer_id)
+        if not layer:
+            print(f"[download] Layer {layer_id} not found, aborting.")
+            return
+        if layer.layer_type not in ("esri_mapserver", "esri_featureserver"):
+            print(f"[download] Layer {layer_id} has type {layer.layer_type}, aborting.")
+            return
+        current = repo.get_download_progress(layer_id) or {}
+        if current.get("status") == "cancelled":
+            print(f"[download] Task for {layer_id} cancelled before start, aborting.")
+            return
+        service_url = layer.tile_url_template
+        repo.update_download_progress(layer_id, {
+            "status": "processing",
+            "percent": 0,
+            "task_id": self.request.id,
+            "started_at": datetime.now().isoformat(),
+        })
+
+    dest_dir = Path(settings.DOWNLOAD_DIR) / layer_id
+    progress_cb = _make_download_progress_callback(layer_id)
+    try:
+        manifest = download_service(service_url, dest_dir, progress_cb)
+        # store paths relative to DOWNLOAD_DIR so they map onto the /downloads mount
+        for entry in manifest.get("sublayers", []):
+            for key in ("geojson", "shapefile_zip"):
+                if entry.get(key):
+                    entry[key] = str(Path(entry[key]).relative_to(settings.DOWNLOAD_DIR))
+        with db.get_session() as session:
+            SyncLayerRepository(session).update_download_progress(layer_id, {
+                "status": "done",
+                "percent": 100,
+                "task_id": self.request.id,
+                "finished_at": datetime.now().isoformat(),
+                "manifest": manifest,
+            })
+        print(f"[download] Layer {layer_id} download done.")
+    except DownloadCancelled:
+        with db.get_session() as session:
+            SyncLayerRepository(session).update_download_progress(
+                layer_id, {"status": "cancelled", "task_id": self.request.id}
+            )
+        print(f"[download] Layer {layer_id} download cancelled.")
+    except Exception as exc:
+        with db.get_session() as session:
+            SyncLayerRepository(session).update_download_progress(layer_id, {
+                "status": "failed",
+                "task_id": self.request.id,
+                "error": str(exc),
+            })
+        if isinstance(exc, EsriDownloadError):
+            raise self.retry(exc=exc, countdown=10)
+        raise
+
+
 @celery_app.task(bind=True, max_retries=3)
 def clean_up_task(self, layer_id: str):
     

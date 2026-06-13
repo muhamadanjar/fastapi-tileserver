@@ -14,7 +14,7 @@ from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_c
 from app.core.utils import slugify, generate_unique_code
 from app.core.response import APIResponse
 from app.core.config import settings
-from app.workers.tasks import process_tiling_task
+from app.workers.tasks import process_tiling_task, download_esri_layer_task
 from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError
 from app.usecases.getinfo_layer import QueryLayerFeaturesUseCase
 from app.usecases.get_layer_fields import GetLayerFieldsUseCase
@@ -266,6 +266,102 @@ async def retile_layer(
     return {"message": "Retiling queued", "upload_id": upload_session.id}
 
 
+_DOWNLOADABLE_ESRI_TYPES = ("esri_mapserver", "esri_featureserver")
+
+
+@router.post("/{layer_id}/download")
+async def trigger_layer_download(
+    layer_id: str,
+    repo: LayerRepository = Depends(_get_layer_repo),
+):
+    from app.infrastructure.services.esri_downloader import esri_service_base
+
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+    if layer.layer_type not in _DOWNLOADABLE_ESRI_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Layer type '{layer.layer_type}' is not downloadable; only Esri MapServer/FeatureServer layers are supported.",
+        )
+    if not esri_service_base(layer.tile_url_template or ""):
+        raise HTTPException(status_code=422, detail="Layer URL is not a valid Esri MapServer/FeatureServer URL")
+
+    current = (layer.file_metadata or {}).get("download_process") or {}
+    if current.get("status") in ("pending", "processing"):
+        raise HTTPException(status_code=409, detail="Download already in progress for this layer")
+
+    await repo.update(layer_id, file_metadata={
+        "download_process": {"status": "pending", "percent": 0}
+    })
+    task = download_esri_layer_task.delay(layer_id)
+    await repo.update(layer_id, file_metadata={
+        "download_process": {"status": "pending", "percent": 0, "task_id": task.id}
+    })
+
+    return APIResponse.success(
+        message="Download queued",
+        data={"layer_id": layer_id, "task_id": task.id},
+    )
+
+
+@router.get("/{layer_id}/download/status")
+async def get_layer_download_status(
+    layer_id: str,
+    repo: LayerRepository = Depends(_get_layer_repo),
+):
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+    progress = (layer.file_metadata or {}).get("download_process")
+    if not progress:
+        raise HTTPException(status_code=404, detail="No download has been started for this layer")
+    return APIResponse.success(message="Download status", data=progress)
+
+
+@router.get("/{layer_id}/download/files")
+async def list_layer_download_files(
+    layer_id: str,
+    repo: LayerRepository = Depends(_get_layer_repo),
+):
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+
+    download_dir = Path(settings.DOWNLOAD_DIR) / layer_id
+    if not download_dir.exists():
+        raise HTTPException(status_code=404, detail="No downloaded files for this layer")
+
+    files = []
+    for f in sorted(download_dir.rglob("*")):
+        if f.is_file():
+            rel = f.relative_to(settings.DOWNLOAD_DIR)
+            files.append({
+                "path": str(rel),
+                "size": _fmt_size(f.stat().st_size),
+                "url": f"/downloads/{rel}",
+            })
+    return APIResponse.success(message="Downloaded files", data=files)
+
+
+@router.delete("/{layer_id}/download")
+async def cancel_layer_download(
+    layer_id: str,
+    repo: LayerRepository = Depends(_get_layer_repo),
+):
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+    current = (layer.file_metadata or {}).get("download_process") or {}
+    if current.get("status") not in ("pending", "processing"):
+        raise HTTPException(status_code=422, detail="No active download to cancel")
+
+    await repo.update(layer_id, file_metadata={
+        "download_process": {**current, "status": "cancelled"}
+    })
+    return APIResponse.success(message="Download cancelled", data={"layer_id": layer_id})
+
+
 @router.post("/external", response_model=LayerResponse)
 async def add_external_layer(
     req: ExternalLayerRequest,
@@ -364,6 +460,15 @@ async def get_delete_preview(
             except OSError:
                 pass
 
+    # Downloaded Esri data on disk
+    download_dir = Path(settings.DOWNLOAD_DIR) / layer_id
+    if download_dir.exists():
+        try:
+            size = sum(f.stat().st_size for f in download_dir.rglob('*') if f.is_file())
+            items.append({"type": "download_files", "label": "Downloaded data files", "detail": _fmt_size(size)})
+        except OSError:
+            pass
+
     # CSW record — always present
     items.append({"type": "csw_record", "label": "CSW catalog record", "detail": layer_id})
 
@@ -393,6 +498,11 @@ async def delete_layer(
             shutil.rmtree(tile_dir, ignore_errors=True)
         except OSError:
             pass
+
+    # 1b. Delete downloaded Esri data from disk
+    download_dir = Path(settings.DOWNLOAD_DIR) / layer_id
+    if download_dir.exists():
+        shutil.rmtree(download_dir, ignore_errors=True)
 
     # 2. Delete DB row first (removes FK constraint to UploadSession)
     await layer_repo.delete(layer_id)

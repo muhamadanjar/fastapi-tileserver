@@ -152,6 +152,23 @@ class SyncLayerRepository:
             self.session.add(layer)
             self.session.commit()
 
+    def update_download_progress(self, layer_id: str, progress: dict) -> None:
+        layer = self.get_by_id(layer_id)
+        if layer:
+            existing = dict(layer.file_metadata or {})
+            existing["download_process"] = progress
+            layer.file_metadata = existing
+            _sa_attrs.flag_modified(layer, "file_metadata")
+            layer.updated_at = datetime.now(timezone.utc)
+            self.session.add(layer)
+            self.session.commit()
+
+    def get_download_progress(self, layer_id: str) -> Optional[dict]:
+        layer = self.get_by_id(layer_id)
+        if layer and layer.file_metadata:
+            return layer.file_metadata.get("download_process")
+        return None
+
     def code_exists(self, code: str) -> bool:
         result = self.session.exec(
             select(Layer).where(Layer.code == code)
