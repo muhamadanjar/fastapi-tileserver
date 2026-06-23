@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     TILES_DIR: Path = BASE_DIR / "data" / "tiles"
     CHUNKS_DIR: Path = BASE_DIR / "data" / "chunks"
     DOWNLOAD_DIR: Path = BASE_DIR / "data" / "download"
+    MBTILES_DIR: Path = BASE_DIR / "data" / "mbtiles"
 
     # Database
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -78,3 +79,4 @@ settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 settings.TILES_DIR.mkdir(parents=True, exist_ok=True)
 settings.CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
 settings.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+settings.MBTILES_DIR.mkdir(parents=True, exist_ok=True)

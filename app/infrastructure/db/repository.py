@@ -175,6 +175,27 @@ class SyncLayerRepository:
         )
         return result.first() is not None
 
+    def update_mbtiles(self, layer_id: str, *, status: str,
+                       progress: Optional[dict] = None,
+                       path: Optional[str] = None,
+                       size_bytes: Optional[int] = None) -> None:
+        layer = self.get_by_id(layer_id)
+        if not layer:
+            return
+        meta = dict(layer.file_metadata or {})
+        meta["mbtiles"] = {**(meta.get("mbtiles") or {}),
+                           **(progress or {}), "status": status}
+        layer.file_metadata = meta
+        _sa_attrs.flag_modified(layer, "file_metadata")
+        layer.mbtiles_status = status
+        if path is not None:
+            layer.mbtiles_path = path
+        if size_bytes is not None:
+            layer.mbtiles_size_bytes = size_bytes
+        layer.updated_at = datetime.now(timezone.utc)
+        self.session.add(layer)
+        self.session.commit()
+
 
 class LayerRepository:
     """Async variant for FastAPI endpoints."""
@@ -324,3 +345,24 @@ class LayerRepository:
             await self.session.commit()
             return True
         return False
+
+    async def update_mbtiles(self, layer_id: str, *, status: str,
+                             progress: Optional[dict] = None,
+                             path: Optional[str] = None,
+                             size_bytes: Optional[int] = None) -> None:
+        layer = await self.get_by_id(layer_id)
+        if not layer:
+            return
+        meta = dict(layer.file_metadata or {})
+        meta["mbtiles"] = {**(meta.get("mbtiles") or {}),
+                           **(progress or {}), "status": status}
+        layer.file_metadata = meta
+        attributes.flag_modified(layer, "file_metadata")
+        layer.mbtiles_status = status
+        if path is not None:
+            layer.mbtiles_path = path
+        if size_bytes is not None:
+            layer.mbtiles_size_bytes = size_bytes
+        layer.updated_at = datetime.now(timezone.utc)
+        self.session.add(layer)
+        await self.session.commit()

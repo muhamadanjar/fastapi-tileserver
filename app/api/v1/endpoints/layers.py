@@ -579,3 +579,53 @@ async def query_features(
 ):
     usecase = QueryLayerFeaturesUseCase(layer_repo, session_repo)
     return await usecase.execute(layer_id, lon, lat)
+
+
+@router.post("/{layer_id}/mbtiles")
+async def trigger_mbtiles(layer_id: str, repo: LayerRepository = Depends(_get_layer_repo)):
+    from app.workers.tasks import generate_mbtiles_task
+
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(404, "Layer not found")
+    if layer.layer_type not in ("tile", "mvt"):
+        raise HTTPException(400,
+            f"MBTiles export only supports tiled layers (tile/mvt), got '{layer.layer_type}'")
+    tiles_dir = Path(settings.TILES_DIR) / layer_id
+    if not tiles_dir.exists():
+        raise HTTPException(400, "No tiles on disk for this layer; run tiling first")
+    task = generate_mbtiles_task.delay(layer_id=layer_id)
+    return APIResponse.success(message="MBTiles generation started",
+        data={"layer_id": layer_id, "task_id": task.id, "status": "processing"})
+
+
+@router.get("/{layer_id}/mbtiles/status")
+async def mbtiles_status(layer_id: str, repo: LayerRepository = Depends(_get_layer_repo)):
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(404, "Layer not found")
+    meta = (layer.file_metadata or {}).get("mbtiles", {})
+    return APIResponse.success(data={
+        "layer_id": layer_id,
+        "status": layer.mbtiles_status,
+        "size_bytes": layer.mbtiles_size_bytes,
+        "progress": meta,
+        "download_url": f"/api/v1/layers/{layer_id}/mbtiles/download"
+                        if layer.mbtiles_status == "done" else None,
+    })
+
+
+@router.get("/{layer_id}/mbtiles/download")
+async def download_mbtiles(layer_id: str, repo: LayerRepository = Depends(_get_layer_repo)):
+    from fastapi.responses import FileResponse
+
+    layer = await repo.get_by_id(layer_id)
+    if not layer or layer.mbtiles_status != "done" or not layer.mbtiles_path:
+        raise HTTPException(404, "MBTiles not available for this layer")
+    file_path = Path(settings.MBTILES_DIR) / layer.mbtiles_path
+    if not file_path.exists():
+        raise HTTPException(404, "MBTiles file missing from disk")
+    return FileResponse(path=str(file_path),
+        media_type="application/vnd.mapbox-vector-tile" if layer.layer_type == "mvt"
+                   else "application/x-sqlite3",
+        filename=f"{layer.code or layer_id}.mbtiles")

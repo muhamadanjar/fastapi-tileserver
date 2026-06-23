@@ -88,3 +88,6 @@ class Layer(SQLModel, table=True):
     bbox_south: Optional[float] = Field(default=None)
     bbox_east: Optional[float] = Field(default=None)
     bbox_north: Optional[float] = Field(default=None)
+    mbtiles_path: Optional[str] = Field(default=None)
+    mbtiles_status: Optional[str] = Field(default=None)
+    mbtiles_size_bytes: Optional[int] = Field(default=None)

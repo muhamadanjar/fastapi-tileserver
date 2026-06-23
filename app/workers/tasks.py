@@ -260,7 +260,7 @@ def download_esri_layer_task(self, layer_id: str):
 
 @celery_app.task(bind=True, max_retries=3)
 def clean_up_task(self, layer_id: str):
-    
+
     with db.get_session() as session:
         layer_repo = SyncLayerRepository(session)
         try:
@@ -268,3 +268,50 @@ def clean_up_task(self, layer_id: str):
                 return
         except Exception as exc:
             print(f"[tiling] Failed to clean up layer {layer_id}: {exc}")
+
+
+@celery_app.task(bind=True, max_retries=2)
+def generate_mbtiles_task(self, layer_id: str):
+    from app.core.mbtiles import pack_tile_pyramid
+    from app.core.config import settings
+
+    with db.get_session() as session:
+        layer = SyncLayerRepository(session).get_by_id(layer_id)
+        if not layer:
+            print(f"[mbtiles] Layer {layer_id} not found, aborting.")
+            return
+        # mvt -> pbf, everything raster -> png (matches the tilers' output)
+        tile_format = "pbf" if layer.layer_type == "mvt" else "png"
+        bounds = None
+        if layer.bbox_west is not None:
+            bounds = (layer.bbox_west, layer.bbox_south,
+                      layer.bbox_east, layer.bbox_north)
+        name = layer.filename
+        SyncLayerRepository(session).update_mbtiles(
+            layer_id, status="processing", progress={"percent": 0})
+
+    tiles_dir = Path(settings.TILES_DIR) / layer_id
+    out_path = Path(settings.MBTILES_DIR) / f"{layer_id}.mbtiles"
+
+    def progress_cb(p: dict):
+        with db.get_session() as s:
+            SyncLayerRepository(s).update_mbtiles(layer_id, status="processing", progress=p)
+
+    try:
+        result = pack_tile_pyramid(
+            tiles_dir=tiles_dir, output_path=out_path,
+            tile_format=tile_format, name=name, bounds=bounds,
+            progress_callback=progress_cb)
+        with db.get_session() as s:
+            SyncLayerRepository(s).update_mbtiles(
+                layer_id, status="done",
+                progress={"percent": 100, "tile_count": result["tile_count"],
+                          "min_zoom": result["min_zoom"], "max_zoom": result["max_zoom"]},
+                path=f"{layer_id}.mbtiles", size_bytes=result["size_bytes"])
+        print(f"[mbtiles] {layer_id} done: {result['tile_count']} tiles, "
+              f"{result['size_bytes']} bytes")
+    except Exception as exc:
+        with db.get_session() as s:
+            SyncLayerRepository(s).update_mbtiles(
+                layer_id, status="failed", progress={"error": str(exc)})
+        raise self.retry(exc=exc, countdown=10)
