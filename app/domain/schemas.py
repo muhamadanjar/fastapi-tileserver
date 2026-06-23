@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 from datetime import datetime
 
 
@@ -117,3 +117,10 @@ class FieldUniqueValuesResponse(BaseModel):
     layer_id: str
     field_name: str
     values: list[str]
+
+
+class BboxFeaturesResponse(BaseModel):
+    layer_id: str
+    count: int
+    exceeded: bool
+    features: list[dict[str, Any]]

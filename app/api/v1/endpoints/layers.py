@@ -3,10 +3,10 @@ import os
 import shutil
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 import uuid
 
-from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse
+from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse
 from app.domain.models import Layer, JobStatus
 from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
@@ -19,6 +19,7 @@ from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError
 from app.usecases.getinfo_layer import QueryLayerFeaturesUseCase
 from app.usecases.get_layer_fields import GetLayerFieldsUseCase
 from app.usecases.get_field_unique_values import GetFieldUniqueValuesUseCase
+from app.usecases.get_features_in_bbox import GetFeaturesInBboxUseCase
 
 router = APIRouter(prefix="/layers", tags=["layers"])
 
@@ -546,6 +547,24 @@ async def get_field_unique_values(
     usecase = GetFieldUniqueValuesUseCase(layer_repo, session_repo)
     try:
         return await usecase.execute(layer_id, field_name)
+    except (LayerNotFoundError, LayerFieldsUnavailableError) as exc:
+        raise HTTPException(status_code=404, detail=exc.message)
+
+
+@router.get("/{layer_id}/features/bbox", response_model=BboxFeaturesResponse)
+async def get_features_in_bbox(
+    layer_id: str,
+    west: float = Query(...),
+    south: float = Query(...),
+    east: float = Query(...),
+    north: float = Query(...),
+    limit: int = Query(default=200, le=500),
+    layer_repo: LayerRepository = Depends(_get_layer_repo),
+    session_repo: UploadSessionRepository = Depends(_get_session_repo),
+):
+    usecase = GetFeaturesInBboxUseCase(layer_repo, session_repo)
+    try:
+        return await usecase.execute(layer_id, west, south, east, north, limit)
     except (LayerNotFoundError, LayerFieldsUnavailableError) as exc:
         raise HTTPException(status_code=404, detail=exc.message)
 
