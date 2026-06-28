@@ -24,6 +24,38 @@ from app.usecases.get_features_in_bbox import GetFeaturesInBboxUseCase
 router = APIRouter(prefix="/layers", tags=["layers"])
 
 
+def _fetch_esri_mapserver_layers(url: str) -> Optional[list]:
+    """Fetch list available layers dari ESRI MapServer.
+
+    ESRI MapServer REST API response format:
+    {
+      "layers": [
+        {"id": 0, "name": "Layer 1", ...},
+        {"id": 1, "name": "Layer 2", ...},
+        ...
+      ]
+    }
+    """
+    import requests
+
+    if not url:
+        return None
+
+    try:
+        resp = requests.get(f'{url}?f=json', timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            layers = data.get('layers') or []
+            return [
+                {'id': layer.get('id'), 'name': layer.get('name')}
+                for layer in layers
+                if layer.get('id') is not None and layer.get('name')
+            ]
+    except Exception:
+        pass
+    return None
+
+
 def _get_layer_repo(session=Depends(get_async_session)) -> LayerRepository:
     return LayerRepository(session)
 
@@ -127,9 +159,27 @@ async def patch_layer(
 ):
     from app.infrastructure.services.bbox_extractor import extract_bbox
 
+    # Get existing layer untuk check layer_type
+    existing = await repo.get_by_id(layer_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+
+    # Prepare file metadata
+    file_metadata = req.file_metadata or {}
+
+    # Determine layer type (use request value or existing value)
+    layer_type = req.layer_type or existing.layer_type
+    tile_url = req.tile_url_template or existing.tile_url_template
+
+    # Fetch available layers untuk ESRI MapServer jika URL berubah
+    if layer_type == 'esri_mapserver' and req.tile_url_template:
+        layers_list = await asyncio.to_thread(_fetch_esri_mapserver_layers, tile_url)
+        if layers_list:
+            file_metadata['availableLayers'] = layers_list
+
     updated = await repo.update(
         layer_id,
-        file_metadata=req.file_metadata,
+        file_metadata=file_metadata,
         filename=req.filename,
         layer_type=req.layer_type,
         tile_url_template=req.tile_url_template,
@@ -382,6 +432,15 @@ async def add_external_layer(
     base_code = slugify(filename_without_ext)
     unique_code = await generate_unique_code(base_code, repo.code_exists)
 
+    # Prepare file metadata
+    file_metadata = req.params or {}
+
+    # Fetch available layers untuk ESRI MapServer
+    if req.layer_type == 'esri_mapserver':
+        layers_list = await asyncio.to_thread(_fetch_esri_mapserver_layers, req.source_url)
+        if layers_list:
+            file_metadata['availableLayers'] = layers_list
+
     layer = Layer(
         id=str(uuid.uuid4()),
         code=unique_code,
@@ -389,7 +448,7 @@ async def add_external_layer(
         file_type="external",
         layer_type=req.layer_type,
         tile_url_template=req.source_url,
-        file_metadata=req.params or {},
+        file_metadata=file_metadata,
         upload_session_id=None,
         is_visible=True,
         bbox_west=bbox_result[0] if bbox_result else None,
@@ -527,12 +586,13 @@ async def delete_layer(
 @router.get("/{layer_id}/fields", response_model=LayerFieldsResponse)
 async def get_layer_fields(
     layer_id: str,
+    layerIndex: int = Query(None),
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
     usecase = GetLayerFieldsUseCase(layer_repo, session_repo)
     try:
-        return await usecase.execute(layer_id)
+        return await usecase.execute(layer_id, layer_index=layerIndex)
     except (LayerNotFoundError, LayerFieldsUnavailableError) as exc:
         raise HTTPException(status_code=404, detail=exc.message)
 
