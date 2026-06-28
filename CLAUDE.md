@@ -290,7 +290,28 @@ docker ps | grep rabbitmq  # or check http://localhost:15672
 
 ## Rules
 
-- **Commits are FORBIDDEN** — Claude must NOT run `git commit` under any circumstances
-- **Git read-only** — Only these operations are allowed: `git log`, `git status`, `git diff`, `git show`
-- **FORBIDDEN: `git commit`, `git push`, `git merge`, `git rebase`, `git reset`** — all git write operations are prohibited
-- **Documentation** doc always Store  in folder docs
+### Git Operations — STRICTLY FORBIDDEN
+
+**NO git write operations allowed:**
+- ❌ `git commit` — FORBIDDEN
+- ❌ `git push` — FORBIDDEN
+- ❌ `git add` — FORBIDDEN
+- ❌ `git rm` — FORBIDDEN
+- ❌ `git merge` — FORBIDDEN
+- ❌ `git rebase` — FORBIDDEN
+- ❌ `git reset` — FORBIDDEN
+- ❌ `git checkout` — FORBIDDEN
+- ❌ `--force`, `--no-verify`, `--amend` flags — FORBIDDEN
+- ❌ Any submodule operations — FORBIDDEN
+
+**Only read-only operations allowed:**
+- ✅ `git log` — View commit history
+- ✅ `git status` — Check working tree status
+- ✅ `git diff` — View changes
+- ✅ `git show` — View commit details
+
+**Why:** Part of multi-service monorepo with git submodules. All git operations coordinated at root by authorized personnel.
+
+### Documentation
+
+- **Storage:** Always store docs in `docs/` folder
