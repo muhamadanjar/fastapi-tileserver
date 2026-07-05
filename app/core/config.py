@@ -37,6 +37,18 @@ class Settings(BaseSettings):
     # Chunked upload threshold in bytes (default 10 MB)
     CHUNK_UPLOAD_THRESHOLD: int = 10_485_760
 
+    # Esri Download
+    ESRI_MAX_WORKERS: int = Field(default=4, env="ESRI_MAX_WORKERS")
+    ESRI_IGNORE_SSL: bool = Field(default=False, env="ESRI_IGNORE_SSL")
+    ESRI_RESUME_CACHE_DIR: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parent.parent.parent / "data" / "esri_cache",
+        env="ESRI_RESUME_CACHE_DIR",
+    )
+    ESRI_REQUEST_TIMEOUT: int = Field(default=15, env="ESRI_REQUEST_TIMEOUT")
+    ESRI_DOWNLOAD_TIMEOUT: int = Field(default=180, env="ESRI_DOWNLOAD_TIMEOUT")
+    ESRI_PROXY_URL: str = Field(default="", env="ESRI_PROXY_URL")
+    ESRI_TOKEN: str = Field(default="", env="ESRI_TOKEN")
+
     # Upload session expiry in hours (default 24)
     UPLOAD_SESSION_EXPIRE_HOURS: int = Field(default=24, env="UPLOAD_SESSION_EXPIRE_HOURS")
 
@@ -80,3 +92,4 @@ settings.TILES_DIR.mkdir(parents=True, exist_ok=True)
 settings.CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
 settings.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 settings.MBTILES_DIR.mkdir(parents=True, exist_ok=True)
+settings.ESRI_RESUME_CACHE_DIR.mkdir(parents=True, exist_ok=True)

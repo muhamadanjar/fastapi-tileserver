@@ -6,7 +6,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 import uuid
 
-from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse
+from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest
 from app.domain.models import Layer, JobStatus
 from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
@@ -324,6 +324,7 @@ _DOWNLOADABLE_ESRI_TYPES = ("esri_mapserver", "esri_featureserver")
 @router.post("/{layer_id}/download")
 async def trigger_layer_download(
     layer_id: str,
+    req: Optional[EsriDownloadRequest] = None,
     repo: LayerRepository = Depends(_get_layer_repo),
 ):
     from app.infrastructure.services.esri_downloader import esri_service_base
@@ -343,17 +344,29 @@ async def trigger_layer_download(
     if current.get("status") in ("pending", "processing"):
         raise HTTPException(status_code=409, detail="Download already in progress for this layer")
 
+    output_formats = req.output_formats if req and req.output_formats else None
+
+    # Baca proxy_url dan token dari file_metadata (per-layer config)
+    meta = layer.file_metadata or {}
+    proxy_url = meta.get("proxy_url", "")
+    token = meta.get("token", "")
+
+    # Preserve existing file_metadata — jangan timpa proxy_url/token
     await repo.update(layer_id, file_metadata={
-        "download_process": {"status": "pending", "percent": 0}
+        **meta,
+        "download_process": {"status": "pending", "percent": 0},
     })
-    task = download_esri_layer_task.delay(layer_id)
+    task = download_esri_layer_task.delay(
+        layer_id, output_formats=output_formats, proxy_url=proxy_url, token=token,
+    )
     await repo.update(layer_id, file_metadata={
-        "download_process": {"status": "pending", "percent": 0, "task_id": task.id}
+        **meta,
+        "download_process": {"status": "pending", "percent": 0, "task_id": task.id, "output_formats": output_formats},
     })
 
     return APIResponse.success(
         message="Download queued",
-        data={"layer_id": layer_id, "task_id": task.id},
+        data={"layer_id": layer_id, "task_id": task.id, "output_formats": output_formats},
     )
 
 

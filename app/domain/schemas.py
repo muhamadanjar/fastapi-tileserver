@@ -124,3 +124,61 @@ class BboxFeaturesResponse(BaseModel):
     count: int
     exceeded: bool
     features: list[dict[str, Any]]
+
+
+# --- Esri Discovery ---
+
+class EsriDiscoverRequest(BaseModel):
+    url: str
+    proxy_url: str = ""
+    token: str = ""
+
+
+class EsriDiscoverLayerInfo(BaseModel):
+    id: int
+    name: str
+    geometry_type: str
+    query_supported: bool
+
+
+class EsriDiscoverResponse(BaseModel):
+    service_type: str  # MapServer, FeatureServer, etc.
+    service_url: str
+    layers: list[EsriDiscoverLayerInfo]
+    render_only: bool
+    skipped: list[dict[str, Any]]
+
+
+# --- Esri Download Estimate ---
+
+class EsriEstimateRequest(BaseModel):
+    output_formats: Optional[list[str]] = None
+    chunk_size: Optional[int] = None
+
+
+class EsriLayerEstimate(BaseModel):
+    layer_id: int
+    layer_name: str
+    feature_count: Optional[int]
+    chunk_size: int
+    estimated_chunks: int
+    geometry_type: str
+    spatial_reference: str
+    output_formats: list[str]
+    confidence: str
+    notes: list[str]
+
+
+class EsriEstimateResponse(BaseModel):
+    service_url: str
+    total_layers: int
+    total_features: Optional[int]
+    total_chunks: int
+    low_confidence_count: int
+    layers: list[EsriLayerEstimate]
+
+
+# --- Esri Download Request ---
+
+class EsriDownloadRequest(BaseModel):
+    output_formats: Optional[list[str]] = None
