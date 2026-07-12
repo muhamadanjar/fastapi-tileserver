@@ -65,7 +65,12 @@ curl -X PUT http://localhost:8000/api/v1/layers/$LAYER_ID/style \
 
 Malformed XML (e.g. unclosed tags) is rejected locally with `422` before ever reaching GeoServer.
 
-The two modes are mutually exclusive per layer at any moment — switching from `sld` back to `simple` (or vice versa) discards whatever the other mode held; there is no merge.
+Only one mode is *active* at a time (the `mode` field of the stored state — the one installed in GeoServer), but the editor state keeps both representations (`app/core/style_utils.py::merge_style_state`):
+
+- A `simple` save stores the submitted JSON **and** the SLD generated from it (`sld_body`), so the SLD tab always shows the XML matching the simple settings. This replaces any previously saved Custom SLD.
+- An `sld` save stores the raw XML and **keeps** the last simple settings untouched, so switching back to simple mode restores them.
+
+Each save also writes `style_name` into both the stored state and `file_metadata.geoserver.style_name`. Saves merge into the existing `file_metadata` — they never clobber unrelated keys (fields config, tile_process, geoserver publish metadata, ...).
 
 ## Editor-state vs rendering-truth rule
 

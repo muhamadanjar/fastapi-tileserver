@@ -15,6 +15,7 @@ from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_c
 from app.infrastructure.services.geoserver_service import GeoServerService, GeoServerStyleError
 from app.infrastructure.services.sld_builder import build_sld, ALLOWED_GEOMETRIES
 from app.core.utils import slugify, generate_unique_code
+from app.core.style_utils import merge_style_state
 from app.core.response import APIResponse
 from app.core.config import settings
 from app.workers.tasks import process_tiling_task, download_esri_layer_task
@@ -284,7 +285,6 @@ async def put_layer_style(
             sld_body = build_sld(req.style, style_name)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
-        stored_style = {"mode": "simple", "style": req.style}
     else:  # mode == "sld"
         if not req.sld_body:
             raise HTTPException(status_code=422, detail="'sld_body' is required when mode=sld")
@@ -293,7 +293,14 @@ async def put_layer_style(
         except (SafeParseError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"Invalid SLD XML: {exc}")
         sld_body = req.sld_body
-        stored_style = {"mode": "sld", "sld_body": req.sld_body}
+
+    stored_style = merge_style_state(
+        (layer.file_metadata or {}).get("style"),
+        mode=req.mode,
+        style_name=style_name,
+        sld_body=sld_body,
+        style=req.style,
+    )
 
     svc = GeoServerService(
         url=settings.GEOSERVER_URL,
@@ -307,7 +314,13 @@ async def put_layer_style(
     except GeoServerStyleError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.detail)
 
-    updated = await repo.update(layer_id, file_metadata={"style": stored_style})
+    updated = await repo.update(
+        layer_id,
+        file_metadata={
+            "style": stored_style,
+            "geoserver": {**gs_meta, "style_name": style_name},
+        },
+    )
 
     status = "done"
     if updated.upload_session_id:

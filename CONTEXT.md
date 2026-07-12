@@ -30,7 +30,7 @@ Named area fill texture on a Simple Style: `solid` | `hatched` | `cross-hatched`
 
 ## Custom SLD
 
-A Layer Style expressed as raw SLD XML supplied by an advanced user. Mutually exclusive with Simple Style for a given Layer at any moment (`mode` discriminator). Switching back to Simple Style discards the Custom SLD.
+A Layer Style expressed as raw SLD XML supplied by an advanced user. Stored alongside the Simple Style in the editor state; the `mode` discriminator marks which one is active (installed in GeoServer). Saving a Simple Style regenerates the stored SLD from it (keeping both in sync and replacing any Custom SLD); saving a Custom SLD keeps the last Simple Style settings for later reuse.
 
 ## Rendering Truth vs Editor State
 
