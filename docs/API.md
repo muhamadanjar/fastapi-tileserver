@@ -384,7 +384,7 @@ Set style layer WMS GeoServer — dua mode: `simple` (JSON geometry-keyed, backe
 {
   "mode": "simple",
   "style": {
-    "Polygon": {"fillColor": "#ff0000", "strokeColor": "#000000", "strokeWidth": 2, "opacity": 0.6}
+    "Polygon": {"fillColor": "#ff0000", "strokeColor": "#000000", "strokeWidth": 2, "opacity": 0.6, "strokePattern": "dashed", "fillPattern": "hatched"}
   }
 }
 ```

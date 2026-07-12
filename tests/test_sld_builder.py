@@ -61,3 +61,49 @@ def test_valid_xml_output():
     xml = build_sld({"Polygon": {}, "LineString": {}, "Point": {}}, "layer_abc")
     _parse(xml)  # must not raise
     assert "1.0.0" in xml
+
+
+def test_dashed_stroke_emits_dasharray():
+    xml = build_sld({"LineString": {"strokePattern": "dashed"}}, "layer_abc")
+    assert '<sld:CssParameter name="stroke-dasharray">8 4</sld:CssParameter>' in xml
+    _parse(xml)
+
+
+def test_dash_dot_stroke_on_polygon_outline():
+    xml = build_sld({"Polygon": {"strokePattern": "dash-dot"}}, "layer_abc")
+    assert '"stroke-dasharray">8 4 1 4<' in xml
+    _parse(xml)
+
+
+def test_solid_stroke_emits_no_dasharray():
+    xml = build_sld({"LineString": {"strokePattern": "solid"}, "Polygon": {}}, "layer_abc")
+    assert "stroke-dasharray" not in xml
+
+
+def test_hatched_fill_uses_graphic_fill_slash_mark():
+    xml = build_sld({"Polygon": {"fillPattern": "hatched", "fillColor": "#ff0000"}}, "layer_abc")
+    root = _parse(xml)
+    assert root.findall(".//{http://www.opengis.net/sld}GraphicFill")
+    assert "shape://slash" in xml
+    assert "#ff0000" in xml  # fillColor drives the mark stroke
+
+
+def test_cross_hatched_and_dotted_fill_marks():
+    assert "shape://times" in build_sld({"Polygon": {"fillPattern": "cross-hatched"}}, "l")
+    assert "shape://dot" in build_sld({"Polygon": {"fillPattern": "dotted"}}, "l")
+
+
+def test_solid_fill_has_no_graphic_fill():
+    xml = build_sld({"Polygon": {"fillPattern": "solid"}}, "layer_abc")
+    assert "GraphicFill" not in xml
+    assert '<sld:CssParameter name="fill">' in xml
+
+
+def test_unknown_stroke_pattern_raises():
+    with pytest.raises(ValueError, match="strokePattern"):
+        build_sld({"LineString": {"strokePattern": "zigzag"}}, "layer_abc")
+
+
+def test_unknown_fill_pattern_raises():
+    with pytest.raises(ValueError, match="fillPattern"):
+        build_sld({"Polygon": {"fillPattern": "stars"}}, "layer_abc")

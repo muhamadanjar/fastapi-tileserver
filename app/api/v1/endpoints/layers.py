@@ -280,7 +280,10 @@ async def put_layer_style(
                 status_code=422,
                 detail=f"Unknown geometry keys: {sorted(unknown)}. Allowed: {sorted(ALLOWED_GEOMETRIES)}",
             )
-        sld_body = build_sld(req.style, style_name)
+        try:
+            sld_body = build_sld(req.style, style_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
         stored_style = {"mode": "simple", "style": req.style}
     else:  # mode == "sld"
         if not req.sld_body:

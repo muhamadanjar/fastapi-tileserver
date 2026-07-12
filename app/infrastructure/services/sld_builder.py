@@ -1,8 +1,8 @@
 """Generate SLD 1.0.0 XML from the geometry-keyed simple-style JSON.
 
-Same JSON vocabulary as VectorTiler (tiling_service.py): keys Polygon /
-LineString / Point, props fillColor, strokeColor, strokeWidth, opacity,
-pointRadius.
+Same JSON vocabulary as VectorTiler (tiling_service.py) and the dashboard
+style editor: keys Polygon / LineString / Point, props fillColor,
+strokeColor, strokeWidth, opacity, pointRadius, strokePattern, fillPattern.
 """
 from xml.sax.saxutils import escape
 
@@ -16,21 +16,77 @@ _DEFAULTS = {
     "pointRadius": 5,
 }
 
+# Pattern names are shared verbatim with the dashboard editor (types.ts).
+STROKE_PATTERNS = {
+    "solid": None,
+    "dashed": "8 4",
+    "dotted": "1 4",
+    "dash-dot": "8 4 1 4",
+}
+
+# GeoServer well-known fill marks; shape:// marks render with stroke params only.
+FILL_PATTERNS = {
+    "solid": None,
+    "hatched": "shape://slash",
+    "cross-hatched": "shape://times",
+    "dotted": "shape://dot",
+}
+
 
 def _prop(style: dict, key: str) -> str:
     return escape(str(style.get(key, _DEFAULTS[key])))
 
 
-def _polygon_symbolizer(s: dict) -> str:
+def _dasharray_param(s: dict) -> str:
+    pattern = s.get("strokePattern", "solid")
+    if pattern not in STROKE_PATTERNS:
+        raise ValueError(
+            f"Unknown strokePattern: {pattern!r}. Allowed: {sorted(STROKE_PATTERNS)}"
+        )
+    dasharray = STROKE_PATTERNS[pattern]
+    if dasharray is None:
+        return ""
     return f"""
-        <sld:PolygonSymbolizer>
+            <sld:CssParameter name="stroke-dasharray">{dasharray}</sld:CssParameter>"""
+
+
+def _polygon_fill(s: dict) -> str:
+    pattern = s.get("fillPattern", "solid")
+    if pattern not in FILL_PATTERNS:
+        raise ValueError(
+            f"Unknown fillPattern: {pattern!r}. Allowed: {sorted(FILL_PATTERNS)}"
+        )
+    mark = FILL_PATTERNS[pattern]
+    if mark is None:
+        return f"""
           <sld:Fill>
             <sld:CssParameter name="fill">{_prop(s, "fillColor")}</sld:CssParameter>
             <sld:CssParameter name="fill-opacity">{_prop(s, "opacity")}</sld:CssParameter>
-          </sld:Fill>
+          </sld:Fill>"""
+    return f"""
+          <sld:Fill>
+            <sld:GraphicFill>
+              <sld:Graphic>
+                <sld:Mark>
+                  <sld:WellKnownName>{mark}</sld:WellKnownName>
+                  <sld:Stroke>
+                    <sld:CssParameter name="stroke">{_prop(s, "fillColor")}</sld:CssParameter>
+                    <sld:CssParameter name="stroke-width">1</sld:CssParameter>
+                    <sld:CssParameter name="stroke-opacity">{_prop(s, "opacity")}</sld:CssParameter>
+                  </sld:Stroke>
+                </sld:Mark>
+                <sld:Size>8</sld:Size>
+              </sld:Graphic>
+            </sld:GraphicFill>
+          </sld:Fill>"""
+
+
+def _polygon_symbolizer(s: dict) -> str:
+    return f"""
+        <sld:PolygonSymbolizer>{_polygon_fill(s)}
           <sld:Stroke>
             <sld:CssParameter name="stroke">{_prop(s, "strokeColor")}</sld:CssParameter>
-            <sld:CssParameter name="stroke-width">{_prop(s, "strokeWidth")}</sld:CssParameter>
+            <sld:CssParameter name="stroke-width">{_prop(s, "strokeWidth")}</sld:CssParameter>{_dasharray_param(s)}
           </sld:Stroke>
         </sld:PolygonSymbolizer>"""
 
@@ -41,7 +97,7 @@ def _line_symbolizer(s: dict) -> str:
           <sld:Stroke>
             <sld:CssParameter name="stroke">{_prop(s, "strokeColor")}</sld:CssParameter>
             <sld:CssParameter name="stroke-width">{_prop(s, "strokeWidth")}</sld:CssParameter>
-            <sld:CssParameter name="stroke-opacity">{_prop(s, "opacity")}</sld:CssParameter>
+            <sld:CssParameter name="stroke-opacity">{_prop(s, "opacity")}</sld:CssParameter>{_dasharray_param(s)}
           </sld:Stroke>
         </sld:LineSymbolizer>"""
 

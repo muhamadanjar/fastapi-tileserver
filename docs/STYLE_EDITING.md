@@ -34,7 +34,16 @@ The request body is discriminated by `mode`.
 
 ### `simple` — geometry-keyed JSON
 
-Same vocabulary used by local vector tiling (`Polygon` / `LineString` / `Point` keys, each with `fillColor`, `strokeColor`, `strokeWidth`, `opacity`, and `pointRadius` for points). The backend builds SLD 1.0.0 XML from this JSON (`app/infrastructure/services/sld_builder.py::build_sld`).
+Same vocabulary used by local vector tiling and the dashboard style editor (`Polygon` / `LineString` / `Point` keys, each with `fillColor`, `strokeColor`, `strokeWidth`, `opacity`, `pointRadius` for points, plus optional patterns). The backend builds SLD 1.0.0 XML from this JSON (`app/infrastructure/services/sld_builder.py::build_sld`).
+
+Optional pattern props (names shared verbatim with dashboard `types.ts`):
+
+| Prop | Values | SLD mapping | Applies to |
+|---|---|---|---|
+| `strokePattern` | `solid` \| `dashed` (`8 4`) \| `dotted` (`1 4`) \| `dash-dot` (`8 4 1 4`) | `stroke-dasharray` CssParameter | LineString stroke, Polygon outline |
+| `fillPattern` | `solid` \| `hatched` (`shape://slash`) \| `cross-hatched` (`shape://times`) \| `dotted` (`shape://dot`) | `GraphicFill` with GeoServer well-known mark, mark stroke = `fillColor`, size 8 | Polygon fill |
+
+`solid` (or absent) = plain stroke/fill, no extra SLD. Unknown pattern value → `422`. `shape://` marks are GeoServer vendor extensions — fine here since GeoServer is the only rendering target.
 
 ```bash
 curl -X PUT http://localhost:8000/api/v1/layers/$LAYER_ID/style \
