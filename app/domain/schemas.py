@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
 from datetime import datetime
 
 
@@ -91,6 +91,18 @@ class PatchLayerRequest(BaseModel):
     abstract: Optional[str] = None
     topic_category: Optional[str] = None
     language: Optional[str] = None
+
+
+class LayerStyleRequest(BaseModel):
+    mode: Literal["simple", "sld"]
+    style: Optional[dict] = None      # required when mode=simple; geometry-keyed JSON
+    sld_body: Optional[str] = None    # required when mode=sld; raw SLD XML
+
+
+class LayerStyleResponse(BaseModel):
+    layer_id: str
+    style_name: str
+    style: Optional[dict] = None      # stored editor state incl. mode, None if never styled
 
 
 class LayerFieldsResponse(BaseModel):

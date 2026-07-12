@@ -137,7 +137,7 @@ async def estimate_layer_download(
         )
         return estimator.estimate_service(
             output_formats=req.output_formats,
-            chunk_size=req.chunk_size,
+            #chunk_size=req.chunk_size,
         )
 
     result = await asyncio.to_thread(_estimate)

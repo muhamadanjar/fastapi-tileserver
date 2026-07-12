@@ -356,6 +356,56 @@ Query feature di koordinat (get info / click). Handler: `QueryLayerFeaturesUseCa
 
 ---
 
+### GET `/layers/{layer_id}/style`
+
+Ambil style tersimpan (editor state) untuk layer WMS yang dipublish ke GeoServer. Lihat `docs/STYLE_EDITING.md` untuk detail lengkap.
+
+**Response (200):**
+```json
+{
+  "layer_id": "98aa7ae4-e06e-4f9a-ab60-71d13416d728",
+  "style_name": "layer_98aa7ae4-e06e-4f9a-ab60-71d13416d728",
+  "style": null
+}
+```
+
+**Error Responses:**
+- `404 Not Found` — layer tidak ditemukan
+- `422 Unprocessable Entity` — layer bukan WMS yang dipublish ke GeoServer (mis. external WMS atau tipe lain)
+
+---
+
+### PUT `/layers/{layer_id}/style`
+
+Set style layer WMS GeoServer — dua mode: `simple` (JSON geometry-keyed, backend generate SLD 1.0.0) atau `sld` (raw SLD XML). Style disimpan di GeoServer sebagai `layer_{layer_id}` dan diset sebagai default style layer tersebut. Lihat `docs/STYLE_EDITING.md` untuk skema lengkap dan aturan editor-state vs rendering-truth.
+
+**Request body — mode `simple`:**
+```json
+{
+  "mode": "simple",
+  "style": {
+    "Polygon": {"fillColor": "#ff0000", "strokeColor": "#000000", "strokeWidth": 2, "opacity": 0.6}
+  }
+}
+```
+
+**Request body — mode `sld`:**
+```json
+{
+  "mode": "sld",
+  "sld_body": "<sld:StyledLayerDescriptor xmlns:sld=\"http://www.opengis.net/sld\" version=\"1.0.0\">...</sld:StyledLayerDescriptor>"
+}
+```
+
+**Response (200):** full `LayerResponse` (updated `file_metadata.style`).
+
+**Error Responses:**
+- `404 Not Found` — layer tidak ditemukan
+- `422 Unprocessable Entity` — layer bukan WMS yang dipublish ke GeoServer; `style`/`sld_body` hilang atau tidak valid; unknown geometry key; SLD XML malformed; atau GeoServer menolak SLD (invalid content)
+- `502 Bad Gateway` — GeoServer tidak bisa dihubungi atau gagal memproses request
+
+---
+
 ## Error Handling
 
 All errors follow standard response format:
