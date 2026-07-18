@@ -10,7 +10,7 @@ from defusedxml.ElementTree import fromstring as safe_fromstring, ParseError as 
 from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse
 from app.domain.models import Layer, JobStatus
 from app.infrastructure.db.connection import get_async_session
-from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
+from app.infrastructure.db.repository import LayerRepository, ProjectRepository, UploadSessionRepository
 from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_csw
 from app.infrastructure.services.geoserver_service import GeoServerService, GeoServerStyleError
 from app.infrastructure.services.sld_builder import build_sld, ALLOWED_GEOMETRIES
@@ -699,7 +699,10 @@ async def delete_layer(
     if download_dir.exists():
         shutil.rmtree(download_dir, ignore_errors=True)
 
-    # 2. Delete DB row first (removes FK constraint to UploadSession)
+    # 2. Delete DB row first (removes FK constraint to UploadSession).
+    # A published survey project references the layer via projects.layer_id —
+    # clear that FK first or the delete violates projects_layer_id_fkey.
+    await ProjectRepository(layer_repo.session).unlink_layer(layer_id)
     await layer_repo.delete(layer_id)
 
     # 3. Delete source file + UploadSession

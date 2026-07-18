@@ -1,5 +1,27 @@
 # Ubiquitous Language — tileserver_api
 
+## Project
+
+A survey container for capturing spatial data. Owns exactly one Form Schema (the dynamic attribute form definition) and many Features (spatial records entered against that form). Declares exactly one Geometry Type (`point` | `line` | `polygon`) at creation; every Feature in the Project must match it. A Project is not itself renderable; it may be published as a Layer to appear on the map.
+
+## Form Schema
+
+The dynamic attribute form definition owned by a Project. An ordered list of Fields, each with a Field Type drawn from the fixed v1 set: `text`, `textarea`, `number`, `select`, `multiselect`, `date`, `checkbox`, `file`. Select-like fields carry their options inside the schema.
+
+The schema is mutable and unversioned. Existing Feature attribute values are never destroyed by schema edits: a removed Field's values stay stored but are no longer rendered; a new required Field is enforced only on subsequent create/edit; a removed select option stays readable but becomes invalid on re-edit.
+
+## Feature (survey sense)
+
+A single spatial record captured in a Project: one geometry (matching the Project's Geometry Type) plus attribute values conforming to the Project's Form Schema. Carries optional client-supplied attribution (who captured it); the service itself does not authenticate surveyors.
+
+## Attachment
+
+A file uploaded through a Project's `file` Field (photo, document). Owned by the Project; referenced from Feature attribute values. Deleting a Feature deletes its Attachments; deleting a Project deletes all of them. Attachments are publicly served, like tiles.
+
+## Publishing (a Project)
+
+Making a Project visible on the map by creating a Layer backed by the Project's live Feature data. A published Project's Layer always reflects current Features — publishing is not a snapshot. The Layer is only a projection: unpublishing (or deleting the Layer directly) removes the Layer but never touches Features; deleting the Project removes everything — Features, Attachments, and the Layer. "Published" is not a stored status; it is derived from the Layer's existence.
+
 ## Layer
 
 A renderable map entry tracked in the `layers` table. May originate from a local upload (tiled by us) or reference an external/remote service.

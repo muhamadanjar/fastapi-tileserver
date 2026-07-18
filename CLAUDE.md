@@ -52,6 +52,7 @@ Clean Architecture layered structure:
 - **`app/api/v1/endpoints/`** — HTTP layer.
   - `tiles.py` — `POST /upload` direct upload (file < `CHUNK_UPLOAD_THRESHOLD`).
   - `upload.py` — Chunked upload: `POST /uploads/init`, `PATCH /uploads/{upload_id}`, `GET /uploads/{upload_id}/status`. Tiling trigger: `POST /uploads/{upload_id}/tile`. GeoServer publish: `POST /uploads/{upload_id}/geoserver`.
+  - `projects.py` — Survey Projects: CRUD on `Project`/`Feature`/`Attachment`, live GeoJSON (`GET /{project_id}/features.geojson`), export (`GET /{project_id}/export?format=geojson|csv|shp`), publish/unpublish as a Layer (`POST`/`DELETE /{project_id}/publish`). See `docs/SURVEY_PROJECTS.md` for full reference.
 - **`app/usecases/`** — Orchestration.
   - `ProcessUploadUseCase` — saves file, persists `UploadSession` with status `uploaded` (no auto-tiling).
   - `InitChunkedUploadUseCase` — creates upload session + chunk directory.
@@ -133,9 +134,10 @@ POST /api/v1/uploads/{upload_id}/geoserver
 
 ```
 data/
-  uploads/     # final assembled source files
-  tiles/       # output tile PNGs: {layer_id}/{z}/{x}/{y}.png
-  chunks/      # temp chunk parts: {upload_id}/{index}.part  (cleaned after assembly)
+  uploads/       # final assembled source files
+  tiles/         # output tile PNGs: {layer_id}/{z}/{x}/{y}.png
+  chunks/        # temp chunk parts: {upload_id}/{index}.part  (cleaned after assembly)
+  attachments/   # survey Project file-field uploads: {project_id}/{attachment_id}_{filename}, served at /attachments/...
 ```
 
 Database tables stored in PostgreSQL (or configured DB backend), not as files.
@@ -162,6 +164,7 @@ Database tables stored in PostgreSQL (or configured DB backend), not as files.
 - WMTS → Save Layer (as External/Remote)
 - WFS → Save Layer (as External/Remote)
 - Any Type ArcGis → (as External/Remote)
+- Survey (dynamic form + point/line/polygon geometry, captured via `app/api/v1/endpoints/projects.py`) → Save Features → Publish as live GeoJSON Layer (`POST /projects/{id}/publish`, see ADR-0003) or Export (geojson/csv/shp)
 
 ### Environment variables
 
@@ -249,8 +252,11 @@ Common operations:
 **Tables:**
 - `upload_sessions` — upload metadata + chunk tracking (id, filename, layer_id, status, chunk_map, expires_at, etc)
 - `layers` — layer configuration (id, filename, layer_type, tile_url_template, bbox, visibility, etc)
+- `projects` — survey Project (id, name, description, geometry_type, form_schema JSON, layer_id nullable, timestamps)
+- `features` — survey Feature (id, project_id, geometry JSON (GeoJSON, see ADR-0002), attributes JSON, created_by, timestamps)
+- `attachments` — survey file uploads (id, project_id, feature_id nullable, filename, stored_path, content_type, size_bytes, created_at)
 
-**FK:** `layers.upload_session_id` → `upload_sessions.id` (nullable)
+**FK:** `layers.upload_session_id` → `upload_sessions.id` (nullable); `projects.layer_id` → `layers.id` (nullable, set on publish); `features.project_id` → `projects.id`; `attachments.project_id` → `projects.id`
 
 See `app/domain/models.py` for full schema.
 

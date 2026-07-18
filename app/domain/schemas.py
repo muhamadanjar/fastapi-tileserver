@@ -194,3 +194,70 @@ class EsriEstimateResponse(BaseModel):
 
 class EsriDownloadRequest(BaseModel):
     output_formats: Optional[list[str]] = None
+
+
+# --- Survey Projects ---
+
+class ProjectCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    geometry_type: str  # point | line | polygon
+    form_schema: list = []
+
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+
+class FormSchemaUpdate(BaseModel):
+    form_schema: list
+
+
+class ProjectResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    geometry_type: str
+    form_schema: list
+    layer_id: Optional[str] = None
+    is_published: bool
+    feature_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class FeatureCreate(BaseModel):
+    geometry: dict
+    attributes: dict = {}
+    created_by: Optional[str] = None
+
+
+class FeatureUpdate(BaseModel):
+    geometry: Optional[dict] = None
+    attributes: Optional[dict] = None
+
+
+class FeatureResponse(BaseModel):
+    id: str
+    project_id: str
+    geometry: dict
+    attributes: dict
+    created_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AttachmentResponse(BaseModel):
+    id: str
+    project_id: str
+    filename: str
+    url: str
+    content_type: Optional[str] = None
+    size_bytes: int
+
+
+class PublishResponse(BaseModel):
+    project_id: str
+    layer_id: str
+    geojson_url: str

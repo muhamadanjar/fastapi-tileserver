@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     CHUNKS_DIR: Path = BASE_DIR / "data" / "chunks"
     DOWNLOAD_DIR: Path = BASE_DIR / "data" / "download"
     MBTILES_DIR: Path = BASE_DIR / "data" / "mbtiles"
+    ATTACHMENTS_DIR: Path = BASE_DIR / "data" / "attachments"
+    ATTACHMENT_MAX_SIZE: int = Field(default=10 * 1024 * 1024, env="ATTACHMENT_MAX_SIZE")
 
     # Database
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -93,3 +95,4 @@ settings.CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
 settings.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 settings.MBTILES_DIR.mkdir(parents=True, exist_ok=True)
 settings.ESRI_RESUME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+settings.ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)
