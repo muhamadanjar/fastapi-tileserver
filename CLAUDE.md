@@ -321,3 +321,34 @@ docker ps | grep rabbitmq  # or check http://localhost:15672
 ### Documentation
 
 - **Storage:** Always store docs in `docs/` folder
+
+## graphify
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- Fallback: if `graphify` is unavailable (not installed, command not found, graphify-out/ missing) or its answer doesn't cover what's needed, fall back to `grep`/`rg`, `Glob`, or direct file reads. Don't block on graphify.
+- Obsidian vault: `graphify-out/obsidian/` (one note per node/community) is available for browsing in Obsidian. Regenerate after a rebuild with `graphify export obsidian`.
+
+### Query usage
+
+```bash
+graphify query "How does the chunked upload flow work?"      # BFS - broad context, default
+graphify query "trace tiling from upload to tile PNG" --dfs  # DFS - one specific path
+graphify query "<question>" --budget 1500                    # cap answer size in tokens
+graphify path "UploadSession" "TilingService"                # shortest relationship path between two nodes
+graphify explain "EsriClient"                                # plain-language explanation of one node
+```
+Expand the question against the graph's own vocabulary (community labels, node names) before running it — a wording mismatch collapses the answer to noise.
+
+### Update usage
+
+```bash
+graphify update .                 # re-extract only new/changed files (AST-only for code, no LLM cost)
+graphify update . --cluster-only  # rerun community detection on the existing graph, no re-extraction
+```
+Run `graphify update .` after any code change (new/edited/deleted files) so the graph doesn't go stale. Doc/image changes need a full `/graphify --update` (re-runs semantic extraction) since `update` alone is AST-only.
