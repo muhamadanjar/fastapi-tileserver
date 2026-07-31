@@ -7,3 +7,6 @@ data/*
 logs/*
 graphify-out
 
+
+# Orchestry state
+.orchestry
