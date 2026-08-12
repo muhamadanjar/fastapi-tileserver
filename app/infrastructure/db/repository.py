@@ -28,6 +28,12 @@ class UploadSessionRepository:
         )
         return result.scalars().first()
 
+    async def get_by_artifact_handoff(self, handoff_id: str) -> Optional[UploadSession]:
+        result = await self.session.execute(
+            select(UploadSession).where(UploadSession.artifact_handoff_id == handoff_id)
+        )
+        return result.scalars().first()
+
     async def update_chunk_map(
         self,
         upload_id: str,

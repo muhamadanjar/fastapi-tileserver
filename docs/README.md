@@ -4,6 +4,19 @@ Comprehensive documentation for FastAPI geospatial tile service.
 
 ## Quick Start
 
+## Environment ownership
+
+| Variable | Used by | Purpose |
+|---|---|---|
+| `UPLOAD_API_URL` | Tileserver API and workers | Upload API base URL used when processing an artifact handoff. |
+| `UPLOAD_API_CALLER_TOKEN` | Tileserver API and workers | Static server-to-server bearer token sent to Upload API; must equal Upload API's `UPLOAD_API_TRUSTED_SERVICE_TOKENS["tileserver"]`. |
+| `UPLOAD_API_SERVICE_TOKEN` | Tileserver API and workers | Deprecated fallback alias for `UPLOAD_API_CALLER_TOKEN`. |
+| `DB_*`, `RABBITMQ_URL`, `REDIS_URL` | Tileserver API/workers | Database, background queue, and cache configuration. |
+| `GEOSERVER_*` | Tileserver API/workers | GeoServer integration credentials and target workspace. |
+| `CORS_ALLOWED_*` | Tileserver API | Browser origin and header policy. |
+
+`UPLOAD_API_CALLER_TOKEN` is not a user JWT and must not be sent to the browser. See [the shared authentication contract](../../usermanagement_api/docs/features/authentication-and-authorization.md).
+
 **New to TileServer?** Start here:
 1. [Overview](OVERVIEW.md) — service purpose, features, architecture overview
 2. [Setup](SETUP.md) — install dependencies, configure environment, run services
@@ -168,6 +181,8 @@ docs/
 - **Migrations**: Alembic
 
 ## Getting Help
+
+**Upload artifact handoff:** [Artifact Handoff](features/upload-artifact-handoff.md)
 
 **API questions:** [API Reference](API.md)
 

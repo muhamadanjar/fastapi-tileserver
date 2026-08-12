@@ -1,6 +1,7 @@
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+from contextlib import nullcontext
 from sqlalchemy.orm import attributes as _sa_attrs
 
 from app.workers.celery_app import celery_app
@@ -10,6 +11,8 @@ from app.infrastructure.services.tiling_service import TilingService
 from app.infrastructure.services.csw_sync import sync_layer
 from app.domain.models import JobStatus, Layer
 from app.core.utils import slugify, generate_unique_code_sync
+from app.infrastructure.services.file_service import FileService
+from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
 
 
 def _make_progress_callback(layer_id: str):
@@ -41,12 +44,15 @@ def _make_progress_callback(layer_id: str):
 
 @celery_app.task(bind=True, max_retries=3)
 def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, source_path: str, output_format: str = "raster", max_zoom: int = None):
+    artifact_filename = None
     with db.get_session() as session:
         repo = SyncUploadSessionRepository(session)
         current = repo.get_by_id(upload_id)
         if current and current.status == JobStatus.cancelled:
             print(f"[tiling] Task {upload_id} cancelled before start, aborting.")
             return
+        if current:
+            artifact_filename = current.filename
         repo.set_status(upload_id, JobStatus.processing)
 
         # Create placeholder Layer at start so progress callbacks can update it
@@ -90,7 +96,25 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
                 style = existing.file_metadata.get("style")
 
         progress_cb, finalize_progress = _make_progress_callback(layer_id)
-        bounds = TilingService.process_tiling(file_type, Path(source_path), layer_id, output_format=output_format, style=style, progress_callback=progress_cb, max_zoom=max_zoom)
+        artifact_id = source_path.removeprefix("artifact://") if source_path.startswith("artifact://") else None
+        source_context = (
+            UploadArtifactClient().materialize(artifact_id, artifact_filename or "artifact.bin")
+            if artifact_id
+            else nullcontext(Path(source_path))
+        )
+        with source_context as materialized_path:
+            prepared_path = materialized_path
+            if artifact_id:
+                prepared_path, _ = FileService.prepare_source_path(Path(materialized_path))
+            bounds = TilingService.process_tiling(
+                file_type,
+                Path(prepared_path),
+                layer_id,
+                output_format=output_format,
+                style=style,
+                progress_callback=progress_cb,
+                max_zoom=max_zoom,
+            )
         finalize_progress()
         with db.get_session() as session:
             upload_repo = SyncUploadSessionRepository(session)

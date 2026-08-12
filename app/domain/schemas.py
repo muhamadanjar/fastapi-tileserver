@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, Literal
 from datetime import datetime
 
@@ -36,6 +36,22 @@ class UploadInitResponse(BaseModel):
     message: str
     chunk_size: int
     total_chunks: int
+
+
+class ArtifactTilingRequest(BaseModel):
+    artifact_id: str = Field(min_length=36, max_length=36)
+    grant_id: str = Field(min_length=36, max_length=36)
+    handoff_id: str = Field(min_length=8, max_length=255)
+    output_format: Literal["raster", "mvt"] = "raster"
+    max_zoom: Optional[int] = None
+
+
+class ArtifactTilingResponse(BaseModel):
+    upload_id: str
+    layer_id: str
+    artifact_id: str
+    status: str
+    task_id: str
 
 
 class ChunkUploadResponse(BaseModel):

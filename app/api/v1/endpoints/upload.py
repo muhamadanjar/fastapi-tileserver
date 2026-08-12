@@ -4,6 +4,8 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from starlette.concurrency import run_in_threadpool
+import uuid
 from slugify import slugify
 
 from app.core.exceptions import (
@@ -19,6 +21,8 @@ from app.domain.schemas import (
     JobStatusResponse,
     UploadInitRequest,
     UploadInitResponse,
+    ArtifactTilingRequest,
+    ArtifactTilingResponse,
 )
 from app.core.config import settings
 from app.core.utils import generate_unique_code
@@ -29,6 +33,9 @@ from app.usecases.receive_chunk import ReceiveChunkUseCase
 from app.workers.tasks import process_tiling_task
 from app.infrastructure.services.geoserver_service import GeoServerService
 from app.infrastructure.services.bbox_extractor import extract_bbox_from_file
+from app.infrastructure.services.file_service import FileService
+from app.infrastructure.services.upload_artifact_client import UploadArtifactClient, UploadArtifactClientError
+from app.domain.models import UploadSession
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
@@ -39,6 +46,86 @@ def _get_repo(session=Depends(get_async_session)) -> UploadSessionRepository:
 
 def _get_layer_repo(session=Depends(get_async_session)) -> LayerRepository:
     return LayerRepository(session)
+
+
+@router.post("/artifact", response_model=ArtifactTilingResponse, status_code=202)
+async def create_artifact_tiling_job(
+    body: ArtifactTilingRequest,
+    repo: UploadSessionRepository = Depends(_get_repo),
+):
+    """Create a tiling job from an available upload_api artifact without retaining a source copy."""
+    existing = await repo.get_by_artifact_handoff(body.handoff_id)
+    if existing:
+        if existing.artifact_id != body.artifact_id:
+            raise HTTPException(status_code=409, detail="Handoff ID belongs to a different artifact")
+        if not existing.celery_task_id:
+            raise HTTPException(status_code=409, detail="Artifact handoff is pending task dispatch")
+        return ArtifactTilingResponse(
+            upload_id=existing.id,
+            layer_id=existing.layer_id,
+            artifact_id=existing.artifact_id,
+            status=existing.status,
+            task_id=existing.celery_task_id,
+        )
+
+    upload_id = str(uuid.uuid4())
+    layer_id = str(uuid.uuid4())
+    client = UploadArtifactClient()
+    try:
+        lease = await run_in_threadpool(
+            client.acquire_lease,
+            body.artifact_id,
+            body.grant_id,
+            body.handoff_id,
+        )
+        artifact = await run_in_threadpool(client.metadata, body.artifact_id)
+        file_type = FileService.allowed_file(artifact["filename"])
+    except (UploadArtifactClientError, UnsupportedFileFormatException) as exc:
+        if "lease" in locals():
+            await run_in_threadpool(client.release_lease, body.artifact_id, lease["lease_id"])
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    upload = UploadSession(
+        id=upload_id,
+        filename=artifact["filename"],
+        file_type=file_type,
+        layer_id=layer_id,
+        total_size=artifact["size_bytes"],
+        received_bytes=artifact["size_bytes"],
+        status=JobStatus.uploaded,
+        final_path=f"artifact://{body.artifact_id}",
+        output_format=body.output_format,
+        max_zoom=body.max_zoom,
+        chunk_map={},
+        total_chunks=1,
+        uploaded_chunks=1,
+        chunk_size=artifact["size_bytes"],
+        artifact_id=body.artifact_id,
+        artifact_lease_id=lease["lease_id"],
+        artifact_handoff_id=body.handoff_id,
+    )
+    try:
+        await repo.create(upload)
+        task = process_tiling_task.delay(
+            upload_id=upload_id,
+            layer_id=layer_id,
+            file_type=file_type,
+            source_path=upload.final_path,
+            output_format=body.output_format,
+            max_zoom=body.max_zoom,
+        )
+        await repo.set_task_id(upload_id, task.id)
+    except Exception:
+        await repo.delete(upload_id)
+        await run_in_threadpool(client.release_lease, body.artifact_id, lease["lease_id"])
+        raise
+    return ArtifactTilingResponse(
+        upload_id=upload_id,
+        layer_id=layer_id,
+        artifact_id=body.artifact_id,
+        status=JobStatus.processing,
+        task_id=task.id,
+    )
 
 
 @router.post("/init", response_model=UploadInitResponse, status_code=201)
@@ -79,7 +166,9 @@ async def trigger_tiling(
             detail=f"Cannot trigger tiling from status '{session.status}'. Must be 'uploaded' or 'failed'.",
         )
 
-    if not session.final_path or not os.path.exists(session.final_path):
+    if not session.final_path or (
+        not session.final_path.startswith("artifact://") and not os.path.exists(session.final_path)
+    ):
         raise HTTPException(status_code=400, detail="Assembled file not found on disk")
 
     layer_id = session.layer_id

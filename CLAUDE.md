@@ -326,7 +326,7 @@ docker ps | grep rabbitmq  # or check http://localhost:15672
 - **Feature docs:** Once complete (Definition of Done), write the final user/developer documentation in `docs/features/[feature-name].md` — focused on *how the feature works* and *how to use it*. Link it back to the original plan and progress files.
 - **Workflow strictness:** Do not start writing code before both the plan and progress files are initialized and linked.
 
-## graphify
+## Codebase Navigation
 
 This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
