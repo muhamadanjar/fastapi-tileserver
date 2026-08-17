@@ -14,9 +14,9 @@ Configure:
 
 ```env
 UPLOAD_API_URL=http://upload-api:8010/api/v1
-UPLOAD_API_CALLER_TOKEN=<tileserver-specific-upload-api-caller-token>
+UPLOAD_API_SERVICE_TOKEN=<tileserver-specific-upload-api-service-token>
 ```
 
-The caller token must equal the `tileserver` entry in Upload API's `UPLOAD_API_TRUSTED_SERVICE_TOKENS` map. `UPLOAD_API_SERVICE_TOKEN` remains a deprecated fallback during migration.
+The service token must equal the `tileserver` entry in Upload API's `UPLOAD_API_SERVICE_TOKENS` map. `UPLOAD_API_CALLER_TOKEN` remains a deprecated fallback during migration.
 
 Apply migration `0006_add_upload_artifact_reference` before enabling the dashboard cutover.

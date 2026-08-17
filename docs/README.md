@@ -9,13 +9,35 @@ Comprehensive documentation for FastAPI geospatial tile service.
 | Variable | Used by | Purpose |
 |---|---|---|
 | `UPLOAD_API_URL` | Tileserver API and workers | Upload API base URL used when processing an artifact handoff. |
-| `UPLOAD_API_CALLER_TOKEN` | Tileserver API and workers | Static server-to-server bearer token sent to Upload API; must equal Upload API's `UPLOAD_API_TRUSTED_SERVICE_TOKENS["tileserver"]`. |
-| `UPLOAD_API_SERVICE_TOKEN` | Tileserver API and workers | Deprecated fallback alias for `UPLOAD_API_CALLER_TOKEN`. |
+| `UPLOAD_API_SERVICE_TOKEN` | Tileserver API and workers | Static server-to-server bearer token sent to Upload API; must equal Upload API's `UPLOAD_API_SERVICE_TOKENS["tileserver"]`. |
+| `UPLOAD_API_CALLER_TOKEN` | Tileserver API and workers | Deprecated alias for `UPLOAD_API_SERVICE_TOKEN`. |
 | `DB_*`, `RABBITMQ_URL`, `REDIS_URL` | Tileserver API/workers | Database, background queue, and cache configuration. |
 | `GEOSERVER_*` | Tileserver API/workers | GeoServer integration credentials and target workspace. |
 | `CORS_ALLOWED_*` | Tileserver API | Browser origin and header policy. |
 
-`UPLOAD_API_CALLER_TOKEN` is not a user JWT and must not be sent to the browser. See [the shared authentication contract](../../usermanagement_api/docs/features/authentication-and-authorization.md).
+`UPLOAD_API_SERVICE_TOKEN` is not a user JWT and must not be sent to the browser. See [the shared authentication contract](../../usermanagement_api/docs/features/authentication-and-authorization.md).
+
+### Configure `UPLOAD_API_SERVICE_TOKEN`
+
+This is a static, server-to-server bearer secret used only when Tileserver calls Upload API. It is not an access JWT and has no `exp` claim.
+
+Generate a high-entropy value outside the repository:
+
+```bash
+openssl rand -base64 48
+```
+
+Configure the same generated value in both services:
+
+```env
+# Upload API
+UPLOAD_API_SERVICE_TOKENS={"tileserver":"<generated-secret>"}
+
+# Tileserver API and workers
+UPLOAD_API_SERVICE_TOKEN=<generated-secret>
+```
+
+Keep it only in the deployment secret store or runtime environment. Use a unique value for Tileserver, rotate it periodically and immediately after suspected exposure, and restart Upload API plus all Tileserver API/worker processes after changing it. Never use this value as a dashboard credential or expose it in client-side variables, source control, or logs.
 
 **New to TileServer?** Start here:
 1. [Overview](OVERVIEW.md) — service purpose, features, architecture overview
@@ -181,6 +203,8 @@ docs/
 - **Migrations**: Alembic
 
 ## Getting Help
+
+**OAuth Upload client:** [Service Authorization](features/oauth-upload-service-client.md)
 
 **Upload artifact handoff:** [Artifact Handoff](features/upload-artifact-handoff.md)
 
