@@ -53,13 +53,11 @@ async def create_artifact_tiling_job(
     body: ArtifactTilingRequest,
     repo: UploadSessionRepository = Depends(_get_repo),
 ):
-    """Create a tiling job from an available upload_api artifact without retaining a source copy."""
+    """Stage an available upload_api artifact for a later tiling request."""
     existing = await repo.get_by_artifact_handoff(body.handoff_id)
     if existing:
         if existing.artifact_id != body.artifact_id:
             raise HTTPException(status_code=409, detail="Handoff ID belongs to a different artifact")
-        if not existing.celery_task_id:
-            raise HTTPException(status_code=409, detail="Artifact handoff is pending task dispatch")
         return ArtifactTilingResponse(
             upload_id=existing.id,
             layer_id=existing.layer_id,
@@ -71,6 +69,7 @@ async def create_artifact_tiling_job(
     upload_id = str(uuid.uuid4())
     layer_id = str(uuid.uuid4())
     client = UploadArtifactClient()
+    print(upload_id)
     try:
         lease = await run_in_threadpool(
             client.acquire_lease,
@@ -81,6 +80,7 @@ async def create_artifact_tiling_job(
         artifact = await run_in_threadpool(client.metadata, body.artifact_id)
         file_type = FileService.allowed_file(artifact["filename"])
     except (UploadArtifactClientError, UnsupportedFileFormatException) as exc:
+        print("exc")
         if "lease" in locals():
             await run_in_threadpool(client.release_lease, body.artifact_id, lease["lease_id"])
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -106,15 +106,6 @@ async def create_artifact_tiling_job(
     )
     try:
         await repo.create(upload)
-        task = process_tiling_task.delay(
-            upload_id=upload_id,
-            layer_id=layer_id,
-            file_type=file_type,
-            source_path=upload.final_path,
-            output_format=body.output_format,
-            max_zoom=body.max_zoom,
-        )
-        await repo.set_task_id(upload_id, task.id)
     except Exception:
         await repo.delete(upload_id)
         await run_in_threadpool(client.release_lease, body.artifact_id, lease["lease_id"])
@@ -123,8 +114,7 @@ async def create_artifact_tiling_job(
         upload_id=upload_id,
         layer_id=layer_id,
         artifact_id=body.artifact_id,
-        status=JobStatus.processing,
-        task_id=task.id,
+        status=JobStatus.uploaded,
     )
 
 
@@ -185,7 +175,7 @@ async def trigger_tiling(
         output_format=fmt,
         max_zoom=zoom,
     )
-    await repo.set_task_id(upload_id, task.id)
+    await repo.start_tiling(upload_id, task.id, fmt, zoom)
 
     return {
         "message": "Tiling started",

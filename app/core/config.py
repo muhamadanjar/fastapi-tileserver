@@ -105,6 +105,11 @@ def get_settings() -> Settings:
 
 settings = get_settings()
 
+# Make .env visible to raw os.getenv() consumers (e.g. UploadArtifactClient),
+# not just pydantic Settings. Real environment variables still win.
+from dotenv import load_dotenv as _load_dotenv
+_load_dotenv(settings.BASE_DIR / ".env")
+
 # Ensure directories exist
 settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 settings.TILES_DIR.mkdir(parents=True, exist_ok=True)

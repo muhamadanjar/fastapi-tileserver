@@ -51,7 +51,7 @@ class ArtifactTilingResponse(BaseModel):
     layer_id: str
     artifact_id: str
     status: str
-    task_id: str
+    task_id: Optional[str] = None
 
 
 class ChunkUploadResponse(BaseModel):

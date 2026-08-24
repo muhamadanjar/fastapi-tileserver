@@ -89,6 +89,23 @@ class UploadSessionRepository:
             self.session.add(session_obj)
             await self.session.commit()
 
+    async def start_tiling(
+        self,
+        upload_id: str,
+        task_id: str,
+        output_format: str,
+        max_zoom: Optional[int],
+    ) -> None:
+        session_obj = await self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.celery_task_id = task_id
+            session_obj.output_format = output_format
+            session_obj.max_zoom = max_zoom
+            session_obj.status = JobStatus.processing
+            session_obj.updated_at = datetime.utcnow()
+            self.session.add(session_obj)
+            await self.session.commit()
+
     async def delete(self, upload_id: str) -> bool:
         session_obj = await self.get_by_id(upload_id)
         if session_obj:

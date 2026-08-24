@@ -14,7 +14,7 @@ from app.core.security import AuthPrincipal
 class JWTAuthenticationMiddleware(BaseHTTPMiddleware):
     """Require a current User Management permission decision for protected paths."""
 
-    protected_prefixes = ("/api/v1", "/tiles", "/downloads", "/attachments")
+    protected_prefixes = ("/api/v1", "/downloads", "/attachments")
 
     def __init__(self, app, settings: Settings):
         super().__init__(app)

@@ -73,12 +73,14 @@ class UploadArtifactClient:
         return {"Authorization": f"Bearer {self.legacy_token}"}
 
     def acquire_lease(self, artifact_id: str, grant_id: str, reference: str) -> dict:
+        print(self.headers)
         response = requests.put(
             f"{self.base_url}/artifacts/{artifact_id}/leases",
             headers=self.headers,
             json={"grant_id": grant_id, "consumer_reference": reference},
             timeout=15,
         )
+        print("response", response.text)
         if response.status_code >= 400:
             raise UploadArtifactClientError(response.text[:500])
         return response.json()

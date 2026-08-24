@@ -42,17 +42,32 @@ def _make_progress_callback(layer_id: str):
     return callback, finalize
 
 
+def _release_artifact_lease(artifact_id: Optional[str], lease_id: Optional[str]) -> None:
+    """Best-effort lease release so upload_api lifecycle cleanup can reclaim the source."""
+    if not artifact_id or not lease_id:
+        return
+    try:
+        UploadArtifactClient().release_lease(artifact_id, lease_id)
+        print(f"[tiling] Released artifact lease {lease_id} for {artifact_id}")
+    except Exception as exc:
+        print(f"[tiling] Failed to release artifact lease {lease_id} for {artifact_id}: {exc}")
+
 @celery_app.task(bind=True, max_retries=3)
 def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, source_path: str, output_format: str = "raster", max_zoom: int = None):
     artifact_filename = None
+    artifact_id = None
+    artifact_lease_id = None
     with db.get_session() as session:
         repo = SyncUploadSessionRepository(session)
         current = repo.get_by_id(upload_id)
         if current and current.status == JobStatus.cancelled:
             print(f"[tiling] Task {upload_id} cancelled before start, aborting.")
+            _release_artifact_lease(current.artifact_id, current.artifact_lease_id)
             return
         if current:
             artifact_filename = current.filename
+            artifact_id = current.artifact_id
+            artifact_lease_id = current.artifact_lease_id
         repo.set_status(upload_id, JobStatus.processing)
 
         # Create placeholder Layer at start so progress callbacks can update it
@@ -116,6 +131,7 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
                 max_zoom=max_zoom,
             )
         finalize_progress()
+        _release_artifact_lease(artifact_id, artifact_lease_id)
         with db.get_session() as session:
             upload_repo = SyncUploadSessionRepository(session)
             upload_repo.set_status(upload_id, JobStatus.done)
@@ -186,6 +202,10 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
             current = repo.get_by_id(upload_id)
             if current and current.status != JobStatus.cancelled:
                 repo.set_status(upload_id, JobStatus.failed, error_message=str(exc))
+        will_retry = not isinstance(exc, SystemExit) and self.request.retries < self.max_retries
+        # Keep the lease across retries (materialize needs it); release once retries are exhausted.
+        if not will_retry:
+            _release_artifact_lease(artifact_id, artifact_lease_id)
         if not isinstance(exc, SystemExit):
             raise self.retry(exc=exc, countdown=5)
 

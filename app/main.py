@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
-from app.core.auth_middleware import JWTAuthenticationMiddleware
+from app.presentation.middleware.auth_middleware import JWTAuthenticationMiddleware
 from app.api.v1.api import api_router
 from app.api.v1.endpoints.mvt import router as mvt_router
 from app.infrastructure.db.connection import db
@@ -50,7 +50,7 @@ async def _init_csw():
 
     await asyncio.to_thread(_sync_existing)
 
-app.add_middleware(JWTAuthenticationMiddleware, settings=settings)
+# app.add_middleware(JWTAuthenticationMiddleware, settings=settings)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.get_cors_origins(),

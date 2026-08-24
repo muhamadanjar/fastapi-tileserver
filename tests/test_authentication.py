@@ -5,7 +5,7 @@ from jose import jwt
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.core.auth_middleware import JWTAuthenticationMiddleware
+from tileserver_api.app.presentation.middleware.auth_middleware import JWTAuthenticationMiddleware
 from app.core.config import Settings
 from app.core.security import TokenVerificationError, verify_access_token
 
