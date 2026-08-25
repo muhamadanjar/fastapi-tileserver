@@ -356,6 +356,107 @@ Query feature di koordinat (get info / click). Handler: `QueryLayerFeaturesUseCa
 
 ---
 
+### GET `/layers/{layer_id}/style`
+
+Ambil style tersimpan (editor state) untuk layer WMS yang dipublish ke GeoServer. Lihat `docs/STYLE_EDITING.md` untuk detail lengkap.
+
+**Response (200):**
+```json
+{
+  "layer_id": "98aa7ae4-e06e-4f9a-ab60-71d13416d728",
+  "style_name": "layer_98aa7ae4-e06e-4f9a-ab60-71d13416d728",
+  "style": null
+}
+```
+
+**Error Responses:**
+- `404 Not Found` — layer tidak ditemukan
+- `422 Unprocessable Entity` — layer bukan WMS yang dipublish ke GeoServer (mis. external WMS atau tipe lain)
+
+---
+
+### PUT `/layers/{layer_id}/style`
+
+Set style layer WMS GeoServer — dua mode: `simple` (JSON geometry-keyed, backend generate SLD 1.0.0) atau `sld` (raw SLD XML). Style disimpan di GeoServer sebagai `layer_{layer_id}` dan diset sebagai default style layer tersebut. Lihat `docs/STYLE_EDITING.md` untuk skema lengkap dan aturan editor-state vs rendering-truth.
+
+**Request body — mode `simple`:**
+```json
+{
+  "mode": "simple",
+  "style": {
+    "Polygon": {"fillColor": "#ff0000", "strokeColor": "#000000", "strokeWidth": 2, "opacity": 0.6, "strokePattern": "dashed", "fillPattern": "hatched"}
+  }
+}
+```
+
+**Request body — mode `sld`:**
+```json
+{
+  "mode": "sld",
+  "sld_body": "<sld:StyledLayerDescriptor xmlns:sld=\"http://www.opengis.net/sld\" version=\"1.0.0\">...</sld:StyledLayerDescriptor>"
+}
+```
+
+**Response (200):** full `LayerResponse` (updated `file_metadata.style`).
+
+**Error Responses:**
+- `404 Not Found` — layer tidak ditemukan
+- `422 Unprocessable Entity` — layer bukan WMS yang dipublish ke GeoServer; `style`/`sld_body` hilang atau tidak valid; unknown geometry key; SLD XML malformed; atau GeoServer menolak SLD (invalid content)
+- `502 Bad Gateway` — GeoServer tidak bisa dihubungi atau gagal memproses request
+
+---
+
+## Survey Projects
+
+Dynamic-form spatial survey capture: a `Project` owns a `form_schema` and a `geometry_type` (`point`|`line`|`polygon`); `Feature`s are individual spatial records against that schema; `Attachment`s are files uploaded through `file`-type fields. Full reference (concepts, field types, publish semantics, export flattening rules, attachment lifecycle): `docs/SURVEY_PROJECTS.md`.
+
+| Method | Path | Purpose | Status codes |
+|---|---|---|---|
+| POST | `/projects` | Create project | 200, 422 |
+| GET | `/projects` | List projects | 200 |
+| GET | `/projects/{project_id}` | Get project | 200, 404 |
+| PATCH | `/projects/{project_id}` | Update name/description | 200, 404 |
+| PUT | `/projects/{project_id}/schema` | Replace form_schema | 200, 404, 422 |
+| DELETE | `/projects/{project_id}` | Delete project (cascades features, attachments, layer) | 204, 404 |
+| POST | `/projects/{project_id}/features` | Create feature | 200, 404, 422 |
+| GET | `/projects/{project_id}/features` | List features | 200, 404 |
+| GET | `/projects/{project_id}/features/{feature_id}` | Get feature | 200, 404 |
+| PATCH | `/projects/{project_id}/features/{feature_id}` | Update feature (partial, merges attributes) | 200, 404, 422 |
+| DELETE | `/projects/{project_id}/features/{feature_id}` | Delete feature (cascades attachments) | 204, 404 |
+| POST | `/projects/{project_id}/attachments` | Upload attachment for a file-type field | 200, 404, 413, 422 |
+| GET | `/projects/{project_id}/features.geojson` | Live FeatureCollection (used for map rendering) | 200, 404 |
+| GET | `/projects/{project_id}/export?format=geojson\|csv\|shp` | Export flattened features | 200, 404, 422 |
+| POST | `/projects/{project_id}/publish` | Publish as a live `geojson` Layer | 200, 404, 409 |
+| DELETE | `/projects/{project_id}/publish` | Unpublish (removes Layer only, Features untouched) | 204, 404, 409 |
+
+**Example — create project with a dynamic form:**
+```bash
+curl -X POST http://localhost:8080/api/v1/projects \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Survey Jalan",
+    "geometry_type": "point",
+    "form_schema": [
+      {"name": "kondisi", "label": "Kondisi", "type": "select", "required": true, "options": ["baik", "rusak"]}
+    ]
+  }'
+```
+
+**Example — create a feature:**
+```bash
+curl -X POST http://localhost:8080/api/v1/projects/{project_id}/features \
+  -H "Content-Type: application/json" \
+  -d '{"geometry": {"type": "Point", "coordinates": [106.8, -6.2]}, "attributes": {"kondisi": "baik"}, "created_by": "surveyor1"}'
+```
+
+**Example — publish, then export as shapefile:**
+```bash
+curl -X POST http://localhost:8080/api/v1/projects/{project_id}/publish
+curl -O -J http://localhost:8080/api/v1/projects/{project_id}/export?format=shp
+```
+
+---
+
 ## Error Handling
 
 All errors follow standard response format:

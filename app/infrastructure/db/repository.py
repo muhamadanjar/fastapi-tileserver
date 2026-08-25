@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes as _sa_attrs
 from sqlmodel import Session
 
-from app.domain.models import UploadSession, Layer, JobStatus
+from app.domain.models import UploadSession, Layer, JobStatus, Project, Feature, Attachment
 from sqlalchemy.orm import attributes
 from app.core.exceptions import SessionNotFoundError
 
@@ -25,6 +25,12 @@ class UploadSessionRepository:
     async def get_by_id(self, upload_id: str) -> Optional[UploadSession]:
         result = await self.session.execute(
             select(UploadSession).where(UploadSession.id == upload_id)
+        )
+        return result.scalars().first()
+
+    async def get_by_artifact_handoff(self, handoff_id: str) -> Optional[UploadSession]:
+        result = await self.session.execute(
+            select(UploadSession).where(UploadSession.artifact_handoff_id == handoff_id)
         )
         return result.scalars().first()
 
@@ -80,6 +86,23 @@ class UploadSessionRepository:
         session_obj = await self.get_by_id(upload_id)
         if session_obj:
             session_obj.celery_task_id = task_id
+            self.session.add(session_obj)
+            await self.session.commit()
+
+    async def start_tiling(
+        self,
+        upload_id: str,
+        task_id: str,
+        output_format: str,
+        max_zoom: Optional[int],
+    ) -> None:
+        session_obj = await self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.celery_task_id = task_id
+            session_obj.output_format = output_format
+            session_obj.max_zoom = max_zoom
+            session_obj.status = JobStatus.processing
+            session_obj.updated_at = datetime.utcnow()
             self.session.add(session_obj)
             await self.session.commit()
 
@@ -366,3 +389,118 @@ class LayerRepository:
         layer.updated_at = datetime.now(timezone.utc)
         self.session.add(layer)
         await self.session.commit()
+
+
+class ProjectRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def unlink_layer(self, layer_id: str) -> None:
+        """Clear layer_id on any project referencing the layer (before layer deletion)."""
+        result = await self.session.execute(select(Project).where(Project.layer_id == layer_id))
+        for project in result.scalars().all():
+            project.layer_id = None
+            project.updated_at = datetime.now(timezone.utc)
+            self.session.add(project)
+        await self.session.commit()
+
+    async def create(self, project: Project) -> Project:
+        self.session.add(project)
+        await self.session.commit()
+        await self.session.refresh(project)
+        return project
+
+    async def get_by_id(self, project_id: str) -> Optional[Project]:
+        result = await self.session.execute(select(Project).where(Project.id == project_id))
+        return result.scalar_one_or_none()
+
+    async def list_all(self) -> list[Project]:
+        result = await self.session.execute(select(Project).order_by(Project.created_at.desc()))
+        return list(result.scalars().all())
+
+    async def update(self, project: Project) -> Project:
+        project.updated_at = datetime.now(timezone.utc)
+        self.session.add(project)
+        await self.session.commit()
+        await self.session.refresh(project)
+        return project
+
+    async def delete(self, project_id: str) -> bool:
+        project = await self.get_by_id(project_id)
+        if project is None:
+            return False
+        await self.session.delete(project)
+        await self.session.commit()
+        return True
+
+
+class FeatureRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, feature: Feature) -> Feature:
+        self.session.add(feature)
+        await self.session.commit()
+        await self.session.refresh(feature)
+        return feature
+
+    async def get_by_id(self, feature_id: str) -> Optional[Feature]:
+        result = await self.session.execute(select(Feature).where(Feature.id == feature_id))
+        return result.scalar_one_or_none()
+
+    async def list_by_project(self, project_id: str) -> list[Feature]:
+        result = await self.session.execute(
+            select(Feature).where(Feature.project_id == project_id).order_by(Feature.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def update(self, feature: Feature) -> Feature:
+        feature.updated_at = datetime.now(timezone.utc)
+        self.session.add(feature)
+        await self.session.commit()
+        await self.session.refresh(feature)
+        return feature
+
+    async def delete(self, feature_id: str) -> bool:
+        feature = await self.get_by_id(feature_id)
+        if feature is None:
+            return False
+        await self.session.delete(feature)
+        await self.session.commit()
+        return True
+
+    async def delete_by_project(self, project_id: str) -> int:
+        features = await self.list_by_project(project_id)
+        for f in features:
+            await self.session.delete(f)
+        await self.session.commit()
+        return len(features)
+
+
+class AttachmentRepository:
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def create(self, attachment: Attachment) -> Attachment:
+        self.session.add(attachment)
+        await self.session.commit()
+        await self.session.refresh(attachment)
+        return attachment
+
+    async def get_by_id(self, attachment_id: str) -> Optional[Attachment]:
+        result = await self.session.execute(select(Attachment).where(Attachment.id == attachment_id))
+        return result.scalar_one_or_none()
+
+    async def list_by_project(self, project_id: str) -> list[Attachment]:
+        result = await self.session.execute(
+            select(Attachment).where(Attachment.project_id == project_id).order_by(Attachment.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def delete(self, attachment_id: str) -> bool:
+        attachment = await self.get_by_id(attachment_id)
+        if attachment is None:
+            return False
+        await self.session.delete(attachment)
+        await self.session.commit()
+        return True

@@ -10,6 +10,15 @@ from geo.Geoserver import Geoserver
 logger = logging.getLogger(__name__)
 
 
+class GeoServerStyleError(Exception):
+    """Style operation failed. http_status is the HTTP status our API should return."""
+
+    def __init__(self, http_status: int, detail: str):
+        super().__init__(detail)
+        self.http_status = http_status
+        self.detail = detail
+
+
 class GeoServerService:
     def __init__(self, url: str, username: str, password: str, workspace: str):
         self.geo = Geoserver(url, username=username, password=password)
@@ -138,3 +147,54 @@ class GeoServerService:
                             zf.write(f, f.name)
 
         return tmp
+
+    def upsert_style(self, style_name: str, sld_body: str) -> None:
+        """Create or update a workspace SLD style (rendering truth lives in GeoServer).
+
+        Existence is checked explicitly via GET first: GeoServer's PUT to a
+        non-existent style resource does not reliably return 404 (observed as
+        400 "Invalid style:null" on GeoServer 2.27.4), so a status-code-based
+        fallback from PUT->POST is not safe.
+        """
+        headers = {"Content-Type": "application/vnd.ogc.sld+xml"}
+        style_url = f"{self._base_url}/rest/workspaces/{self.workspace}/styles/{style_name}"
+        try:
+            exists_resp = requests.get(
+                f"{style_url}.json", auth=self._auth, timeout=30,
+            )
+            style_exists = exists_resp.status_code == 200
+
+            if style_exists:
+                resp = requests.put(
+                    style_url, data=sld_body.encode("utf-8"),
+                    headers=headers, auth=self._auth, timeout=30,
+                )
+            else:
+                resp = requests.post(
+                    f"{self._base_url}/rest/workspaces/{self.workspace}/styles?name={style_name}",
+                    data=sld_body.encode("utf-8"),
+                    headers=headers, auth=self._auth, timeout=30,
+                )
+
+            if resp.status_code in (200, 201):
+                return
+            if resp.status_code == 400:
+                raise GeoServerStyleError(422, f"GeoServer rejected SLD: {resp.text[:500]}")
+            raise GeoServerStyleError(
+                502, f"GeoServer style upload failed ({resp.status_code}): {resp.text[:300]}"
+            )
+        except requests.RequestException as exc:
+            raise GeoServerStyleError(502, f"GeoServer unreachable: {exc}")
+
+    def set_default_style(self, layer_name: str, style_name: str) -> None:
+        """Set a workspace style as the layer's default. layer_name is 'workspace:store'."""
+        url = f"{self._base_url}/rest/layers/{layer_name}.json"
+        payload = {"layer": {"defaultStyle": {"name": f"{self.workspace}:{style_name}"}}}
+        try:
+            resp = requests.put(url, json=payload, auth=self._auth, timeout=30)
+            if resp.status_code not in (200, 201):
+                raise GeoServerStyleError(
+                    502, f"Failed to set default style ({resp.status_code}): {resp.text[:300]}"
+                )
+        except requests.RequestException as exc:
+            raise GeoServerStyleError(502, f"GeoServer unreachable: {exc}")

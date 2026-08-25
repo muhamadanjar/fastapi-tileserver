@@ -1,5 +1,5 @@
 
-from typing import List, Union
+from typing import List, Optional, Union
 from functools import lru_cache
 from pydantic import AnyHttpUrl, field_validator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,6 +11,19 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "FastAPI Tileserver"
     API_V1_STR: str = "/api/v1"
 
+    # User Management access-token verification. Use exactly one verifier key:
+    # ACCESS_TOKEN_SECRET for HS256, or ACCESS_TOKEN_PUBLIC_KEY for RS256.
+    ACCESS_TOKEN_SECRET: Optional[str] = Field(default=None, env="ACCESS_TOKEN_SECRET")
+    ACCESS_TOKEN_PUBLIC_KEY: Optional[str] = Field(default=None, env="ACCESS_TOKEN_PUBLIC_KEY")
+    ACCESS_TOKEN_ALGORITHMS: str = Field(default="HS256,RS256", env="ACCESS_TOKEN_ALGORITHMS")
+    AUTH_DISABLED: bool = Field(default=False, env="AUTH_DISABLED")
+    USERMANAGEMENT_API_URL: str = Field(
+        default="http://localhost:8000", env="USERMANAGEMENT_API_URL"
+    )
+    AUTHORIZATION_TIMEOUT_SECONDS: float = Field(
+        default=5.0, env="AUTHORIZATION_TIMEOUT_SECONDS"
+    )
+
     # Upload and Data Directories
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
     UPLOAD_DIR: Path = BASE_DIR / "data" / "uploads"
@@ -18,6 +31,8 @@ class Settings(BaseSettings):
     CHUNKS_DIR: Path = BASE_DIR / "data" / "chunks"
     DOWNLOAD_DIR: Path = BASE_DIR / "data" / "download"
     MBTILES_DIR: Path = BASE_DIR / "data" / "mbtiles"
+    ATTACHMENTS_DIR: Path = BASE_DIR / "data" / "attachments"
+    ATTACHMENT_MAX_SIZE: int = Field(default=10 * 1024 * 1024, env="ATTACHMENT_MAX_SIZE")
 
     # Database
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
@@ -36,6 +51,18 @@ class Settings(BaseSettings):
 
     # Chunked upload threshold in bytes (default 10 MB)
     CHUNK_UPLOAD_THRESHOLD: int = 10_485_760
+
+    # Esri Download
+    ESRI_MAX_WORKERS: int = Field(default=4, env="ESRI_MAX_WORKERS")
+    ESRI_IGNORE_SSL: bool = Field(default=False, env="ESRI_IGNORE_SSL")
+    ESRI_RESUME_CACHE_DIR: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parent.parent.parent / "data" / "esri_cache",
+        env="ESRI_RESUME_CACHE_DIR",
+    )
+    ESRI_REQUEST_TIMEOUT: int = Field(default=15, env="ESRI_REQUEST_TIMEOUT")
+    ESRI_DOWNLOAD_TIMEOUT: int = Field(default=180, env="ESRI_DOWNLOAD_TIMEOUT")
+    ESRI_PROXY_URL: str = Field(default="", env="ESRI_PROXY_URL")
+    ESRI_TOKEN: str = Field(default="", env="ESRI_TOKEN")
 
     # Upload session expiry in hours (default 24)
     UPLOAD_SESSION_EXPIRE_HOURS: int = Field(default=24, env="UPLOAD_SESSION_EXPIRE_HOURS")
@@ -61,6 +88,10 @@ class Settings(BaseSettings):
             return [i.strip() for i in self.CORS_ALLOWED_HEADERS.split(",")]
         return self.CORS_ALLOWED_HEADERS
 
+    @property
+    def access_token_algorithms(self) -> List[str]:
+        return [item.strip() for item in self.ACCESS_TOKEN_ALGORITHMS.split(",") if item.strip()]
+
     model_config = SettingsConfigDict(
         env_file=str(BASE_DIR / ".env"),
         extra="allow",
@@ -74,9 +105,16 @@ def get_settings() -> Settings:
 
 settings = get_settings()
 
+# Make .env visible to raw os.getenv() consumers (e.g. UploadArtifactClient),
+# not just pydantic Settings. Real environment variables still win.
+from dotenv import load_dotenv as _load_dotenv
+_load_dotenv(settings.BASE_DIR / ".env")
+
 # Ensure directories exist
 settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 settings.TILES_DIR.mkdir(parents=True, exist_ok=True)
 settings.CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
 settings.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 settings.MBTILES_DIR.mkdir(parents=True, exist_ok=True)
+settings.ESRI_RESUME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+settings.ATTACHMENTS_DIR.mkdir(parents=True, exist_ok=True)

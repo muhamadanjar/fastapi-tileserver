@@ -180,8 +180,8 @@ docker logs rabbitmq
 gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8080
 
 # Or use Docker:
-docker build -t tileserver-api .
-docker run -d -p 8080:8080 tileserver-api
+make docker-build # builds tileserver:0.0.1
+make docker-run   # runs tileserver:0.0.1 on port 8000
 ```
 
 **Celery Worker:**

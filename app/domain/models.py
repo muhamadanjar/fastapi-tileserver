@@ -53,6 +53,9 @@ class UploadSession(SQLModel, table=True):
     uploaded_chunks: int = Field(default=0)
     chunk_size: int = Field(default=0)
     celery_task_id: Optional[str] = Field(default=None)
+    artifact_id: Optional[str] = Field(default=None, index=True)
+    artifact_lease_id: Optional[str] = Field(default=None)
+    artifact_handoff_id: Optional[str] = Field(default=None, unique=True, index=True)
     expires_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
@@ -91,3 +94,47 @@ class Layer(SQLModel, table=True):
     mbtiles_path: Optional[str] = Field(default=None)
     mbtiles_status: Optional[str] = Field(default=None)
     mbtiles_size_bytes: Optional[int] = Field(default=None)
+
+
+class GeometryType(str, enum.Enum):
+    point = "point"
+    line = "line"
+    polygon = "polygon"
+
+
+class Project(SQLModel, table=True):
+    __tablename__ = "projects"
+
+    id: str = Field(primary_key=True)
+    name: str
+    description: Optional[str] = Field(default=None, sa_column=Column(Text()))
+    geometry_type: str  # GeometryType value
+    form_schema: list = Field(default_factory=list, sa_column=Column(JSON))
+    layer_id: Optional[str] = Field(default=None, foreign_key="layers.id")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+
+
+class Feature(SQLModel, table=True):
+    __tablename__ = "features"
+
+    id: str = Field(primary_key=True)
+    project_id: str = Field(foreign_key="projects.id", index=True)
+    geometry: Dict[str, Any] = Field(sa_column=Column(JSON))
+    attributes: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    created_by: Optional[str] = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+
+
+class Attachment(SQLModel, table=True):
+    __tablename__ = "attachments"
+
+    id: str = Field(primary_key=True)
+    project_id: str = Field(foreign_key="projects.id", index=True)
+    feature_id: Optional[str] = Field(default=None, index=True)
+    filename: str
+    stored_path: str
+    content_type: Optional[str] = Field(default=None)
+    size_bytes: int = Field(default=0)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))

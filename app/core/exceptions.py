@@ -52,3 +52,18 @@ class LayerFieldsUnavailableError(TileServerException):
     def __init__(self, layer_type: str, reason: str = None):
         self.message = reason or f"Fields not available for layer type '{layer_type}'."
         super().__init__(self.message)
+
+
+class EsriDownloadError(Exception):
+    """Raised when the remote Esri service cannot be downloaded."""
+    pass
+
+
+class DownloadCancelled(Exception):
+    """Raised to abort an in-progress Esri download."""
+    pass
+
+
+class ServiceConnectionError(Exception):
+    """Raised when connection to an Esri service fails."""
+    pass

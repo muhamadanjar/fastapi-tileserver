@@ -5,13 +5,17 @@ from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 import uuid
+from defusedxml.ElementTree import fromstring as safe_fromstring, ParseError as SafeParseError
 
-from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse
+from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse
 from app.domain.models import Layer, JobStatus
 from app.infrastructure.db.connection import get_async_session
-from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
+from app.infrastructure.db.repository import LayerRepository, ProjectRepository, UploadSessionRepository
 from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_csw
+from app.infrastructure.services.geoserver_service import GeoServerService, GeoServerStyleError
+from app.infrastructure.services.sld_builder import build_sld, ALLOWED_GEOMETRIES
 from app.core.utils import slugify, generate_unique_code
+from app.core.style_utils import merge_style_state
 from app.core.response import APIResponse
 from app.core.config import settings
 from app.workers.tasks import process_tiling_task, download_esri_layer_task
@@ -227,6 +231,123 @@ async def patch_layer(
     )
 
 
+def _require_geoserver_layer(layer) -> dict:
+    """Return geoserver metadata or raise 422 for non-published layers."""
+    gs_meta = (layer.file_metadata or {}).get("geoserver")
+    if layer.layer_type != "wms" or not gs_meta:
+        raise HTTPException(
+            status_code=422,
+            detail="Style editing is only available for WMS layers published to GeoServer",
+        )
+    return gs_meta
+
+
+@router.get("/{layer_id}/style", response_model=LayerStyleResponse)
+async def get_layer_style(
+    layer_id: str,
+    repo: LayerRepository = Depends(_get_layer_repo),
+):
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+    _require_geoserver_layer(layer)
+    return LayerStyleResponse(
+        layer_id=layer_id,
+        style_name=f"layer_{layer_id}",
+        style=(layer.file_metadata or {}).get("style"),
+    )
+
+
+@router.put("/{layer_id}/style", response_model=LayerResponse)
+async def put_layer_style(
+    layer_id: str,
+    req: LayerStyleRequest,
+    repo: LayerRepository = Depends(_get_layer_repo),
+    session_repo: UploadSessionRepository = Depends(_get_session_repo),
+):
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+    gs_meta = _require_geoserver_layer(layer)
+
+    style_name = f"layer_{layer_id}"
+
+    if req.mode == "simple":
+        if not req.style:
+            raise HTTPException(status_code=422, detail="'style' is required when mode=simple")
+        unknown = set(req.style) - ALLOWED_GEOMETRIES
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown geometry keys: {sorted(unknown)}. Allowed: {sorted(ALLOWED_GEOMETRIES)}",
+            )
+        try:
+            sld_body = build_sld(req.style, style_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    else:  # mode == "sld"
+        if not req.sld_body:
+            raise HTTPException(status_code=422, detail="'sld_body' is required when mode=sld")
+        try:
+            safe_fromstring(req.sld_body.encode("utf-8"))
+        except (SafeParseError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid SLD XML: {exc}")
+        sld_body = req.sld_body
+
+    stored_style = merge_style_state(
+        (layer.file_metadata or {}).get("style"),
+        mode=req.mode,
+        style_name=style_name,
+        sld_body=sld_body,
+        style=req.style,
+    )
+
+    svc = GeoServerService(
+        url=settings.GEOSERVER_URL,
+        username=settings.GEOSERVER_USER,
+        password=settings.GEOSERVER_PASSWORD,
+        workspace=settings.GEOSERVER_WORKSPACE,
+    )
+    try:
+        await asyncio.to_thread(svc.upsert_style, style_name, sld_body)
+        await asyncio.to_thread(svc.set_default_style, gs_meta["layer_name"], style_name)
+    except GeoServerStyleError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.detail)
+
+    updated = await repo.update(
+        layer_id,
+        file_metadata={
+            "style": stored_style,
+            "geoserver": {**gs_meta, "style_name": style_name},
+        },
+    )
+
+    status = "done"
+    if updated.upload_session_id:
+        upload_session = await session_repo.get_by_id(updated.upload_session_id)
+        if upload_session:
+            status = upload_session.status
+
+    return LayerResponse(
+        id=updated.id,
+        upload_session_id=updated.upload_session_id,
+        code=updated.code,
+        layer_type=updated.layer_type,
+        filename=updated.filename,
+        file_type=updated.file_type,
+        tile_url_template=updated.tile_url_template,
+        status=status,
+        created_at=updated.created_at,
+        bbox=[updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north]
+        if all([updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north])
+        else None,
+        file_metadata=updated.file_metadata,
+        abstract=updated.abstract,
+        topic_category=updated.topic_category,
+        language=updated.language,
+    )
+
+
 @router.post("/{layer_id}/sync-bbox")
 async def sync_layer_bbox(
     layer_id: str,
@@ -324,6 +445,7 @@ _DOWNLOADABLE_ESRI_TYPES = ("esri_mapserver", "esri_featureserver")
 @router.post("/{layer_id}/download")
 async def trigger_layer_download(
     layer_id: str,
+    req: Optional[EsriDownloadRequest] = None,
     repo: LayerRepository = Depends(_get_layer_repo),
 ):
     from app.infrastructure.services.esri_downloader import esri_service_base
@@ -343,17 +465,29 @@ async def trigger_layer_download(
     if current.get("status") in ("pending", "processing"):
         raise HTTPException(status_code=409, detail="Download already in progress for this layer")
 
+    output_formats = req.output_formats if req and req.output_formats else None
+
+    # Baca proxy_url dan token dari file_metadata (per-layer config)
+    meta = layer.file_metadata or {}
+    proxy_url = meta.get("proxy_url", "")
+    token = meta.get("token", "")
+
+    # Preserve existing file_metadata — jangan timpa proxy_url/token
     await repo.update(layer_id, file_metadata={
-        "download_process": {"status": "pending", "percent": 0}
+        **meta,
+        "download_process": {"status": "pending", "percent": 0},
     })
-    task = download_esri_layer_task.delay(layer_id)
+    task = download_esri_layer_task.delay(
+        layer_id, output_formats=output_formats, proxy_url=proxy_url, token=token,
+    )
     await repo.update(layer_id, file_metadata={
-        "download_process": {"status": "pending", "percent": 0, "task_id": task.id}
+        **meta,
+        "download_process": {"status": "pending", "percent": 0, "task_id": task.id, "output_formats": output_formats},
     })
 
     return APIResponse.success(
         message="Download queued",
-        data={"layer_id": layer_id, "task_id": task.id},
+        data={"layer_id": layer_id, "task_id": task.id, "output_formats": output_formats},
     )
 
 
@@ -565,7 +699,10 @@ async def delete_layer(
     if download_dir.exists():
         shutil.rmtree(download_dir, ignore_errors=True)
 
-    # 2. Delete DB row first (removes FK constraint to UploadSession)
+    # 2. Delete DB row first (removes FK constraint to UploadSession).
+    # A published survey project references the layer via projects.layer_id —
+    # clear that FK first or the delete violates projects_layer_id_fkey.
+    await ProjectRepository(layer_repo.session).unlink_layer(layer_id)
     await layer_repo.delete(layer_id)
 
     # 3. Delete source file + UploadSession

@@ -52,6 +52,7 @@ Clean Architecture layered structure:
 - **`app/api/v1/endpoints/`** — HTTP layer.
   - `tiles.py` — `POST /upload` direct upload (file < `CHUNK_UPLOAD_THRESHOLD`).
   - `upload.py` — Chunked upload: `POST /uploads/init`, `PATCH /uploads/{upload_id}`, `GET /uploads/{upload_id}/status`. Tiling trigger: `POST /uploads/{upload_id}/tile`. GeoServer publish: `POST /uploads/{upload_id}/geoserver`.
+  - `projects.py` — Survey Projects: CRUD on `Project`/`Feature`/`Attachment`, live GeoJSON (`GET /{project_id}/features.geojson`), export (`GET /{project_id}/export?format=geojson|csv|shp`), publish/unpublish as a Layer (`POST`/`DELETE /{project_id}/publish`). See `docs/SURVEY_PROJECTS.md` for full reference.
 - **`app/usecases/`** — Orchestration.
   - `ProcessUploadUseCase` — saves file, persists `UploadSession` with status `uploaded` (no auto-tiling).
   - `InitChunkedUploadUseCase` — creates upload session + chunk directory.
@@ -133,9 +134,10 @@ POST /api/v1/uploads/{upload_id}/geoserver
 
 ```
 data/
-  uploads/     # final assembled source files
-  tiles/       # output tile PNGs: {layer_id}/{z}/{x}/{y}.png
-  chunks/      # temp chunk parts: {upload_id}/{index}.part  (cleaned after assembly)
+  uploads/       # final assembled source files
+  tiles/         # output tile PNGs: {layer_id}/{z}/{x}/{y}.png
+  chunks/        # temp chunk parts: {upload_id}/{index}.part  (cleaned after assembly)
+  attachments/   # survey Project file-field uploads: {project_id}/{attachment_id}_{filename}, served at /attachments/...
 ```
 
 Database tables stored in PostgreSQL (or configured DB backend), not as files.
@@ -162,6 +164,7 @@ Database tables stored in PostgreSQL (or configured DB backend), not as files.
 - WMTS → Save Layer (as External/Remote)
 - WFS → Save Layer (as External/Remote)
 - Any Type ArcGis → (as External/Remote)
+- Survey (dynamic form + point/line/polygon geometry, captured via `app/api/v1/endpoints/projects.py`) → Save Features → Publish as live GeoJSON Layer (`POST /projects/{id}/publish`, see ADR-0003) or Export (geojson/csv/shp)
 
 ### Environment variables
 
@@ -249,8 +252,11 @@ Common operations:
 **Tables:**
 - `upload_sessions` — upload metadata + chunk tracking (id, filename, layer_id, status, chunk_map, expires_at, etc)
 - `layers` — layer configuration (id, filename, layer_type, tile_url_template, bbox, visibility, etc)
+- `projects` — survey Project (id, name, description, geometry_type, form_schema JSON, layer_id nullable, timestamps)
+- `features` — survey Feature (id, project_id, geometry JSON (GeoJSON, see ADR-0002), attributes JSON, created_by, timestamps)
+- `attachments` — survey file uploads (id, project_id, feature_id nullable, filename, stored_path, content_type, size_bytes, created_at)
 
-**FK:** `layers.upload_session_id` → `upload_sessions.id` (nullable)
+**FK:** `layers.upload_session_id` → `upload_sessions.id` (nullable); `projects.layer_id` → `layers.id` (nullable, set on publish); `features.project_id` → `projects.id`; `attachments.project_id` → `projects.id`
 
 See `app/domain/models.py` for full schema.
 
@@ -315,3 +321,39 @@ docker ps | grep rabbitmq  # or check http://localhost:15672
 ### Documentation
 
 - **Storage:** Always store docs in `docs/` folder
+- **Plan:** Every new feature or architectural design MUST be documented in `docs/plans/[feature-name].md` before any code is written.
+- **Progress:** Execution MUST be recorded in `docs/progress/[feature-name].md`, with a prominent link back to its plan at the top.
+- **Feature docs:** Once complete (Definition of Done), write the final user/developer documentation in `docs/features/[feature-name].md` — focused on *how the feature works* and *how to use it*. Link it back to the original plan and progress files.
+- **Workflow strictness:** Do not start writing code before both the plan and progress files are initialized and linked.
+
+## Codebase Navigation
+
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
+
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- **codebase-memory-mcp:** As an alternative, use `search_graph`, `trace_path`, and `get_code_snippet` for structural queries and call-graph tracing.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- Fallback: if `graphify` is unavailable (not installed, command not found, graphify-out/ missing) or its answer doesn't cover what's needed, fall back to `grep`/`rg`, `Glob`, or direct file reads. Don't block on graphify.
+- Obsidian vault: `graphify-out/obsidian/` (one note per node/community) is available for browsing in Obsidian. Regenerate after a rebuild with `graphify export obsidian`.
+
+### Query usage
+
+```bash
+graphify query "How does the chunked upload flow work?"      # BFS - broad context, default
+graphify query "trace tiling from upload to tile PNG" --dfs  # DFS - one specific path
+graphify query "<question>" --budget 1500                    # cap answer size in tokens
+graphify path "UploadSession" "TilingService"                # shortest relationship path between two nodes
+graphify explain "EsriClient"                                # plain-language explanation of one node
+```
+Expand the question against the graph's own vocabulary (community labels, node names) before running it — a wording mismatch collapses the answer to noise.
+
+### Update usage
+
+```bash
+graphify update .                 # re-extract only new/changed files (AST-only for code, no LLM cost)
+graphify update . --cluster-only  # rerun community detection on the existing graph, no re-extraction
+```
+Run `graphify update .` after any code change (new/edited/deleted files) so the graph doesn't go stale. Doc/image changes need a full `/graphify --update` (re-runs semantic extraction) since `update` alone is AST-only.

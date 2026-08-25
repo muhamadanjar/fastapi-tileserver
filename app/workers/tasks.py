@@ -1,5 +1,7 @@
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
+from contextlib import nullcontext
 from sqlalchemy.orm import attributes as _sa_attrs
 
 from app.workers.celery_app import celery_app
@@ -9,6 +11,8 @@ from app.infrastructure.services.tiling_service import TilingService
 from app.infrastructure.services.csw_sync import sync_layer
 from app.domain.models import JobStatus, Layer
 from app.core.utils import slugify, generate_unique_code_sync
+from app.infrastructure.services.file_service import FileService
+from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
 
 
 def _make_progress_callback(layer_id: str):
@@ -38,14 +42,32 @@ def _make_progress_callback(layer_id: str):
     return callback, finalize
 
 
+def _release_artifact_lease(artifact_id: Optional[str], lease_id: Optional[str]) -> None:
+    """Best-effort lease release so upload_api lifecycle cleanup can reclaim the source."""
+    if not artifact_id or not lease_id:
+        return
+    try:
+        UploadArtifactClient().release_lease(artifact_id, lease_id)
+        print(f"[tiling] Released artifact lease {lease_id} for {artifact_id}")
+    except Exception as exc:
+        print(f"[tiling] Failed to release artifact lease {lease_id} for {artifact_id}: {exc}")
+
 @celery_app.task(bind=True, max_retries=3)
 def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, source_path: str, output_format: str = "raster", max_zoom: int = None):
+    artifact_filename = None
+    artifact_id = None
+    artifact_lease_id = None
     with db.get_session() as session:
         repo = SyncUploadSessionRepository(session)
         current = repo.get_by_id(upload_id)
         if current and current.status == JobStatus.cancelled:
             print(f"[tiling] Task {upload_id} cancelled before start, aborting.")
+            _release_artifact_lease(current.artifact_id, current.artifact_lease_id)
             return
+        if current:
+            artifact_filename = current.filename
+            artifact_id = current.artifact_id
+            artifact_lease_id = current.artifact_lease_id
         repo.set_status(upload_id, JobStatus.processing)
 
         # Create placeholder Layer at start so progress callbacks can update it
@@ -89,8 +111,27 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
                 style = existing.file_metadata.get("style")
 
         progress_cb, finalize_progress = _make_progress_callback(layer_id)
-        bounds = TilingService.process_tiling(file_type, Path(source_path), layer_id, output_format=output_format, style=style, progress_callback=progress_cb, max_zoom=max_zoom)
+        artifact_id = source_path.removeprefix("artifact://") if source_path.startswith("artifact://") else None
+        source_context = (
+            UploadArtifactClient().materialize(artifact_id, artifact_filename or "artifact.bin")
+            if artifact_id
+            else nullcontext(Path(source_path))
+        )
+        with source_context as materialized_path:
+            prepared_path = materialized_path
+            if artifact_id:
+                prepared_path, _ = FileService.prepare_source_path(Path(materialized_path))
+            bounds = TilingService.process_tiling(
+                file_type,
+                Path(prepared_path),
+                layer_id,
+                output_format=output_format,
+                style=style,
+                progress_callback=progress_cb,
+                max_zoom=max_zoom,
+            )
         finalize_progress()
+        _release_artifact_lease(artifact_id, artifact_lease_id)
         with db.get_session() as session:
             upload_repo = SyncUploadSessionRepository(session)
             upload_repo.set_status(upload_id, JobStatus.done)
@@ -161,6 +202,10 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
             current = repo.get_by_id(upload_id)
             if current and current.status != JobStatus.cancelled:
                 repo.set_status(upload_id, JobStatus.failed, error_message=str(exc))
+        will_retry = not isinstance(exc, SystemExit) and self.request.retries < self.max_retries
+        # Keep the lease across retries (materialize needs it); release once retries are exhausted.
+        if not will_retry:
+            _release_artifact_lease(artifact_id, artifact_lease_id)
         if not isinstance(exc, SystemExit):
             raise self.retry(exc=exc, countdown=5)
 
@@ -195,7 +240,13 @@ def _make_download_progress_callback(layer_id: str):
 
 
 @celery_app.task(bind=True, max_retries=1)
-def download_esri_layer_task(self, layer_id: str):
+def download_esri_layer_task(
+    self,
+    layer_id: str,
+    output_formats: Optional[list[str]] = None,
+    proxy_url: str = "",
+    token: str = "",
+):
     from app.infrastructure.services.esri_downloader import (
         DownloadCancelled, EsriDownloadError, download_service,
     )
@@ -220,17 +271,26 @@ def download_esri_layer_task(self, layer_id: str):
             "percent": 0,
             "task_id": self.request.id,
             "started_at": datetime.now().isoformat(),
+            "output_formats": output_formats,
         })
 
     dest_dir = Path(settings.DOWNLOAD_DIR) / layer_id
     progress_cb = _make_download_progress_callback(layer_id)
     try:
-        manifest = download_service(service_url, dest_dir, progress_cb)
+        manifest = download_service(
+            service_url, dest_dir, progress_cb,
+            output_formats=output_formats,
+            proxy_url=proxy_url,
+            token=token,
+        )
         # store paths relative to DOWNLOAD_DIR so they map onto the /downloads mount
         for entry in manifest.get("sublayers", []):
-            for key in ("geojson", "shapefile_zip"):
+            for key in ("geojson", "shapefile_zip", "geopackage", "kmz", "image", "world_file", "metadata"):
                 if entry.get(key):
-                    entry[key] = str(Path(entry[key]).relative_to(settings.DOWNLOAD_DIR))
+                    try:
+                        entry[key] = str(Path(entry[key]).relative_to(settings.DOWNLOAD_DIR))
+                    except ValueError:
+                        pass  # keep absolute path if outside DOWNLOAD_DIR
         with db.get_session() as session:
             SyncLayerRepository(session).update_download_progress(layer_id, {
                 "status": "done",
@@ -315,3 +375,127 @@ def generate_mbtiles_task(self, layer_id: str):
             SyncLayerRepository(s).update_mbtiles(
                 layer_id, status="failed", progress={"error": str(exc)})
         raise self.retry(exc=exc, countdown=10)
+
+
+@celery_app.task(bind=True, max_retries=2)
+def discover_esri_service_task(self, layer_id: str, service_url: str):
+    """Discover layers in an Esri service and save results to layer metadata."""
+    from app.infrastructure.services.esri_client import EsriClient
+    from app.infrastructure.services.esri_downloader import esri_service_base
+
+    base_url = esri_service_base(service_url)
+    if not base_url:
+        raise Exception(f"Not a MapServer/FeatureServer URL: {service_url}")
+
+    with db.get_session() as session:
+        repo = SyncLayerRepository(session)
+        repo.update_download_progress(layer_id, {
+            "status": "processing", "percent": 0,
+            "task_id": self.request.id, "discover": True,
+        })
+
+    try:
+        client = EsriClient(base_url)
+        service_info = client.get_service_info()
+        render_only = client.is_render_only_service(service_info)
+        layers = client.get_layers_from_service()
+
+        layer_list = []
+        for entry in layers:
+            layer_id_sub = entry.get("id")
+            if layer_id_sub is None:
+                continue
+            try:
+                detail = client.get_layer_info(layer_id_sub)
+            except Exception:
+                continue
+            geom = client.normalize_geometry_type(detail.get("geometryType"))
+            if geom == "Unknown":
+                geom = client.infer_geometry_type(layer_id_sub, detail)
+            query_ok = client.is_query_supported(detail) or client.can_query_layer(layer_id_sub)
+            layer_list.append({
+                "id": layer_id_sub,
+                "name": entry.get("name") or f"Layer {layer_id_sub}",
+                "geometry_type": geom,
+                "query_supported": query_ok,
+            })
+
+        result = {
+            "service_type": "MapServer" if base_url.lower().endswith("mapserver") else "FeatureServer",
+            "service_url": base_url,
+            "render_only": render_only,
+            "layers": layer_list,
+            "total_queryable": sum(1 for l in layer_list if l["query_supported"]),
+        }
+
+        with db.get_session() as session:
+            repo = SyncLayerRepository(session)
+            layer = repo.get_by_id(layer_id)
+            if layer:
+                meta = dict(layer.file_metadata or {})
+                meta["discover_result"] = result
+                layer.file_metadata = meta
+                _sa_attrs.flag_modified(layer, "file_metadata")
+                session.add(layer)
+                session.commit()
+
+            repo.update_download_progress(layer_id, {
+                "status": "done", "percent": 100,
+                "task_id": self.request.id,
+            })
+
+        print(f"[discover] Layer {layer_id}: {len(layer_list)} layers found")
+        return result
+
+    except Exception as exc:
+        with db.get_session() as session:
+            SyncLayerRepository(session).update_download_progress(
+                layer_id, {"status": "failed", "task_id": self.request.id, "error": str(exc)})
+        raise self.retry(exc=exc, countdown=5)
+
+
+@celery_app.task(bind=True, max_retries=2)
+def estimate_esri_download_task(
+    self, layer_id: str, output_formats: Optional[list[str]] = None,
+    proxy_url: str = "", token: str = "",
+):
+    """Estimate download size for a saved Esri layer."""
+    from app.infrastructure.services.esri_estimator import EsriEstimator
+    from app.infrastructure.services.esri_downloader import esri_service_base
+
+    with db.get_session() as session:
+        repo = SyncLayerRepository(session)
+        layer = repo.get_by_id(layer_id)
+        if not layer:
+            print(f"[estimate] Layer {layer_id} not found, aborting.")
+            return None
+        service_url = layer.tile_url_template
+        if not esri_service_base(service_url):
+            print(f"[estimate] Invalid Esri URL for layer {layer_id}")
+            return None
+
+    try:
+        estimator = EsriEstimator(
+            service_url, proxy_url=proxy_url, token=token,
+        )
+        result = estimator.estimate_service(output_formats=output_formats)
+
+        with db.get_session() as session:
+            repo = SyncLayerRepository(session)
+            layer = repo.get_by_id(layer_id)
+            if layer:
+                meta = dict(layer.file_metadata or {})
+                meta["estimate_result"] = result
+                layer.file_metadata = meta
+                _sa_attrs.flag_modified(layer, "file_metadata")
+                session.add(layer)
+                session.commit()
+
+        print(f"[estimate] Layer {layer_id}: {result.get('total_features')} features, {result.get('total_chunks')} chunks")
+        return result
+
+    except Exception as exc:
+        with db.get_session() as session:
+            SyncLayerRepository(session).update_download_progress(
+                layer_id, {"status": "failed", "task_id": self.request.id, "error": str(exc)})
+        raise self.retry(exc=exc, countdown=5)
