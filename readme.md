@@ -37,6 +37,26 @@ celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
 
 API docs available at `http://localhost:8080/docs`
 
+## Version Management
+
+The release version is defined in `Makefile` as `VERSION` and follows semantic versioning: `MAJOR.MINOR.PATCH`. The current version is `0.0.1`.
+
+To create a new release:
+
+1. Update `VERSION` in `Makefile` (for example, `0.0.1` to `0.0.2`).
+2. Commit the version change and push it to `main` or `master`.
+3. The GitHub Actions workflow validates the version and creates a GitHub Release with the same value, such as `0.0.2`.
+
+Do not add a `v` prefix. The GitHub release is `0.0.2`, and the corresponding Docker image is `tileserver:0.0.2`.
+
+Build the current image locally with:
+
+```bash
+make docker-build
+```
+
+The workflow at [`.github/workflows/semantic-release.yml`](.github/workflows/semantic-release.yml) skips a release if that version already exists.
+
 ## Database Migrations
 
 Migrations auto-run on app startup. Django-style sequential naming: `0001_`, `0002_`, etc.

@@ -4,11 +4,11 @@ Tileserver's default container image is `tileserver:0.0.1`. The version is seman
 
 ## GitHub releases
 
-GitHub releases use `MAJOR.MINOR.PATCH` while Docker images use `tileserver:MAJOR.MINOR.PATCH`. For example, push Git tag `0.0.1`; the workflow at `.github/workflows/semantic-release.yml` validates the tag and creates the `0.0.1` release. The corresponding container image tag is `tileserver:0.0.1`.
+GitHub releases use `MAJOR.MINOR.PATCH` while Docker images use `tileserver:MAJOR.MINOR.PATCH`. On pushes to `main` or `master`, the workflow at `.github/workflows/semantic-release.yml` reads `VERSION` from `Makefile`, validates it, and creates that release if it does not already exist. The corresponding container image tag is `tileserver:MAJOR.MINOR.PATCH`.
 
 ```bash
-git tag 0.0.1
-git push origin 0.0.1
+# Update VERSION in Makefile, then commit the change and push it to main or master.
+git push origin main
 ```
 
 Build it from this service directory:
