@@ -50,6 +50,8 @@ Use Conventional Commits in changes merged to a release branch:
 
 No version field, Git tag, or release needs to be created manually. `make docker-build` derives its image tag from the latest semantic Git tag; for example, Git tag `0.0.2` produces `tileserver:0.0.2`. Before the first release, it uses `tileserver:0.0.0`.
 
+Each new release also builds and pushes `ghcr.io/muhamadanjar/tileserver:<version>` and `ghcr.io/muhamadanjar/tileserver:latest`. The workflow checks out the shared `muhamadanjar/service_auth` library; if that repository is private, configure a `SERVICE_AUTH_TOKEN` repository secret with read access to it.
+
 Build the current image locally with:
 
 ```bash
