@@ -1,5 +1,5 @@
 IMAGE_NAME ?= tileserver
-VERSION ?= 0.0.1
+VERSION ?= $(shell git describe --tags --abbrev=0 --match '[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || echo 0.0.0)
 IMAGE_TAG := $(IMAGE_NAME):$(VERSION)
 BUILD_CONTEXT := ../..
 
