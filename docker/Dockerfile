@@ -1,3 +1,5 @@
+ARG VERSION=0.0.1
+
 FROM python:3.11-slim AS builder
 
 ENV PIP_NO_CACHE_DIR=1
@@ -15,6 +17,10 @@ RUN python -m venv /opt/venv \
     && /opt/venv/bin/pip install --requirement requirements.txt
 
 FROM python:3.11-slim AS runtime
+
+ARG VERSION
+LABEL org.opencontainers.image.title="tileserver" \
+      org.opencontainers.image.version="${VERSION}"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
