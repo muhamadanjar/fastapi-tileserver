@@ -39,15 +39,16 @@ API docs available at `http://localhost:8080/docs`
 
 ## Version Management
 
-The release version is defined in `Makefile` as `VERSION` and follows semantic versioning: `MAJOR.MINOR.PATCH`. The current version is `0.0.1`.
+Releases are fully managed by [semantic-release](https://semantic-release.gitbook.io/semantic-release/). On every push to `main` or `master`, it analyzes Conventional Commit messages, calculates the next semantic version, creates the Git tag and GitHub Release, and generates release notes. Git tags have no `v` prefix, such as `0.0.1`.
 
-To create a new release:
+Use Conventional Commits in changes merged to a release branch:
 
-1. Update `VERSION` in `Makefile` (for example, `0.0.1` to `0.0.2`).
-2. Commit the version change and push it to `main` or `master`.
-3. The GitHub Actions workflow validates the version and creates a GitHub Release with the same value, such as `0.0.2`.
+- `fix: correct tile cache key` creates a patch release.
+- `feat: add vector tile export` creates a minor release.
+- `feat!: remove legacy tile endpoint` or a `BREAKING CHANGE:` footer creates a major release.
+- Other commit types, such as `docs:` and `chore:`, do not create a release by themselves.
 
-Do not add a `v` prefix. The GitHub release is `0.0.2`, and the corresponding Docker image is `tileserver:0.0.2`.
+No version field, Git tag, or release needs to be created manually. `make docker-build` derives its image tag from the latest semantic Git tag; for example, Git tag `0.0.2` produces `tileserver:0.0.2`. Before the first release, it uses `tileserver:0.0.0`.
 
 Build the current image locally with:
 
@@ -55,7 +56,7 @@ Build the current image locally with:
 make docker-build
 ```
 
-The workflow at [`.github/workflows/semantic-release.yml`](.github/workflows/semantic-release.yml) skips a release if that version already exists.
+The workflow configuration is [`.github/workflows/semantic-release.yml`](.github/workflows/semantic-release.yml), and the semantic-release configuration is [`.releaserc.json`](.releaserc.json).
 
 ## Database Migrations
 

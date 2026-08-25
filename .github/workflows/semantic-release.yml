@@ -1,4 +1,4 @@
-name: Tileserver semantic release
+name: Semantic release
 
 on:
   push:
@@ -7,30 +7,25 @@ on:
       - master
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Read and validate semantic version
-        env:
-        run: |
-          VERSION="$(sed -n 's/^VERSION ?= //p' Makefile)"
-          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            echo "Expected VERSION in Makefile to be semantic, such as 0.0.1; received: $VERSION" >&2
-            exit 1
-          fi
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
 
-      - name: Create GitHub release when version is new
+      - name: Create semantic release
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "$VERSION" >/dev/null 2>&1; then
-            echo "Release $VERSION already exists; skipping."
-            exit 0
-          fi
-          gh release create "$VERSION" --target "$GITHUB_SHA" --generate-notes --title "Tileserver $VERSION"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx --yes semantic-release@25.0.9

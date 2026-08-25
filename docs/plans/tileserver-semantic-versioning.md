@@ -6,7 +6,7 @@ Related Progress: [Tileserver Semantic Versioning Progress](../progress/tileserv
 
 ## Scope
 
-- Provide a build target with image name `tileserver` and version `0.0.1`.
+- Derive the local container version from the latest semantic Git tag.
 - Record the version in OCI image metadata.
-- Validate the semantic version on pushes to `main` or `master` and create the matching GitHub release in GitHub Actions.
+- Use semantic-release on pushes to `main` or `master` to calculate, tag, and publish GitHub releases automatically.
 - Document the build and run commands.
