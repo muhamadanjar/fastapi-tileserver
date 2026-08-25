@@ -2,8 +2,9 @@ name: Tileserver semantic release
 
 on:
   push:
-    tags:
-      - "*"
+    branches:
+      - main
+      - master
 
 permissions:
   contents: write
@@ -12,17 +13,24 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Validate semantic version tag
+      - uses: actions/checkout@v4
+
+      - name: Read and validate semantic version
         env:
-          TAG: ${{ github.ref_name }}
         run: |
-          if [[ ! "$TAG" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            echo "Expected a semantic version Git tag such as 0.0.1; received: $TAG" >&2
+          VERSION="$(sed -n 's/^VERSION ?= //p' Makefile)"
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "Expected VERSION in Makefile to be semantic, such as 0.0.1; received: $VERSION" >&2
             exit 1
           fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-      - name: Create GitHub release
+      - name: Create GitHub release when version is new
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" --generate-notes --title "Tileserver $TAG"
+        run: |
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists; skipping."
+            exit 0
+          fi
+          gh release create "$VERSION" --target "$GITHUB_SHA" --generate-notes --title "Tileserver $VERSION"
