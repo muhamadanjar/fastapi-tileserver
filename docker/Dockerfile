@@ -12,7 +12,8 @@ RUN apt-get update \
 # Build from monorepo root: docker build -f services/tileserver_api/docker/Dockerfile .
 COPY libs/service_auth /opt/service_auth
 COPY services/tileserver_api/requirements.txt ./requirements.txt
-RUN python -m venv /opt/venv \
+RUN sed --in-place 's|^-e ../../libs/service_auth\[test\]$|-e /opt/service_auth[test]|' requirements.txt \
+    && python -m venv /opt/venv \
     && /opt/venv/bin/pip install --upgrade pip \
     && /opt/venv/bin/pip install --requirement requirements.txt
 

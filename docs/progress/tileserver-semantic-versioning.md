@@ -9,3 +9,4 @@ Related Plan: [Tileserver Semantic Versioning Plan](../plans/tileserver-semantic
 - [x] Restrict GitHub semantic releases to pushes on `main` and `master`.
 - [x] Document version management in the service README.
 - [x] Replace manual version and release workflow with semantic-release automation.
+- [x] Build and publish each new semantic release image to GHCR.

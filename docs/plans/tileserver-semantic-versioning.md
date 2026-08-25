@@ -9,4 +9,5 @@ Related Progress: [Tileserver Semantic Versioning Progress](../progress/tileserv
 - Derive the local container version from the latest semantic Git tag.
 - Record the version in OCI image metadata.
 - Use semantic-release on pushes to `main` or `master` to calculate, tag, and publish GitHub releases automatically.
+- Publish a versioned container image to GitHub Container Registry when semantic-release creates a new release.
 - Document the build and run commands.
