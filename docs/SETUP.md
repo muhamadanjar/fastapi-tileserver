@@ -2,8 +2,8 @@
 
 ## Prerequisites
 
-- **Python** 3.11+
-- **Docker** (for RabbitMQ)
+- **Python** 3.12+
+- **Docker** (for RabbitMQ and image builds)
 - **PostgreSQL** (production) or SQLite (development)
 - **GDAL** system library (for geospatial processing)
 
@@ -11,8 +11,15 @@
 
 ### 1. Install Python Dependencies
 
+`requirements.txt` contains only dependencies shared by both profiles. Choose a
+profile instead of installing it directly.
+
 ```bash
-pip install -r requirements.txt
+# Development: local service_auth checkout with test dependencies
+pip install -r requirements-dev.txt
+
+# Production: the public service_auth package is fetched over Git HTTPS.
+pip install -r requirements-prod.txt
 ```
 
 **Key packages:**

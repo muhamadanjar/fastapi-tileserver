@@ -10,8 +10,9 @@ Configure `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TOKEN_URL`, and `UPLO
 
 `UPLOAD_API_SERVICE_TOKEN` remains a deprecated fallback during the bounded dual-mode window and emits a warning when configured. Each fallback request also emits a secret-safe `legacy_static_token` event with `outcome=used`. Remove it after both caller and Upload resource metrics report zero legacy usage and before the agreed two-release/30-day deadline.
 
-Build the image from `services/` so the internal sibling package is available:
+Build from the service directory. The pinned public `service_auth` dependency
+is installed over Git HTTPS:
 
 ```bash
-docker build -f tileserver_api/docker/Dockerfile -t tileserver-api:local .
+docker build --target production -f docker/Dockerfile -t tileserver-api:local .
 ```

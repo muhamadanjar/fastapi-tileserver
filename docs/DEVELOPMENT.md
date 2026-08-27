@@ -365,14 +365,10 @@ def publish_kml(self, file_path, store_name):
 
 ### Deploy to Docker
 
-1. Create `Dockerfile`:
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY app/ app/
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+1. Build the production image with the repository's multi-stage
+   [`docker/Dockerfile`](../docker/Dockerfile):
+```bash
+make docker-build
 ```
 
 2. Create `docker-compose.yml` with FastAPI + Celery + RabbitMQ + PostgreSQL

@@ -1,6 +1,7 @@
 import asyncio
 import os
 import shutil
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
@@ -209,8 +210,20 @@ async def publish_to_geoserver(
             detail=f"Cannot publish from status '{session.status}'. Must be 'uploaded' or 'failed'.",
         )
 
-    if not session.final_path or not os.path.exists(session.final_path):
+    # Artifact handoff (upload-api) menyimpan final_path="artifact://<id>", bukan file lokal:
+    # materiakan dulu ke temp dir via upload-api, sama seperti proses tiling di tasks.py.
+    artifact_id = (
+        session.final_path.removeprefix("artifact://")
+        if session.final_path and session.final_path.startswith("artifact://")
+        else None
+    )
+    if artifact_id is None and (not session.final_path or not os.path.exists(session.final_path)):
         raise HTTPException(status_code=400, detail="Assembled file not found on disk")
+    source_ctx = (
+        UploadArtifactClient().materialize(artifact_id, session.filename)
+        if artifact_id
+        else nullcontext(session.final_path)
+    )
 
     await repo.set_status(upload_id, JobStatus.processing)
 
@@ -219,23 +232,24 @@ async def publish_to_geoserver(
     base_code = slugify(filename_without_ext)
     code = await generate_unique_code(base_code, layer_repo.code_exists)
 
-    try:
-        svc = GeoServerService(
-            url=settings.GEOSERVER_URL,
-            username=settings.GEOSERVER_USER,
-            password=settings.GEOSERVER_PASSWORD,
-            workspace=settings.GEOSERVER_WORKSPACE,
-        )
-        result = svc.publish_shp(session.final_path, code)
-    except Exception as exc:
-        await repo.set_status(upload_id, JobStatus.failed, str(exc))
-        raise HTTPException(status_code=502, detail=f"GeoServer publish failed: {exc}")
+    with source_ctx as source_path:
+        try:
+            svc = GeoServerService(
+                url=settings.GEOSERVER_URL,
+                username=settings.GEOSERVER_USER,
+                password=settings.GEOSERVER_PASSWORD,
+                workspace=settings.GEOSERVER_WORKSPACE,
+            )
+            result = svc.publish_shp(source_path, code)
+        except Exception as exc:
+            await repo.set_status(upload_id, JobStatus.failed, str(exc))
+            raise HTTPException(status_code=502, detail=f"GeoServer publish failed: {exc}")
 
-    from app.infrastructure.services.bbox_extractor import extract_bbox_from_file, get_crs_from_file
+        from app.infrastructure.services.bbox_extractor import extract_bbox_from_file, get_crs_from_file
 
-    # bbox: prioritas dari file lokal, fallback hasil recalculate GeoServer
-    bbox = extract_bbox_from_file(session.final_path) or result.get("bbox")
-    crs_str = get_crs_from_file(session.final_path) if bbox else None
+        # bbox: prioritas dari file lokal, fallback hasil recalculate GeoServer
+        bbox = extract_bbox_from_file(source_path) or result.get("bbox")
+        crs_str = get_crs_from_file(source_path) if bbox else None
 
     geoserver_meta = {**result}
     if crs_str:
@@ -311,8 +325,19 @@ async def save_geojson(
             detail=f"Cannot save from status '{session.status}'. Must be 'uploaded' or 'failed'.",
         )
 
-    if not session.final_path or not os.path.exists(session.final_path):
+    # Artifact handoff (upload-api): final_path="artifact://<id>", materiakan dulu (pola sama dengan publish geoserver).
+    artifact_id = (
+        session.final_path.removeprefix("artifact://")
+        if session.final_path and session.final_path.startswith("artifact://")
+        else None
+    )
+    if artifact_id is None and (not session.final_path or not os.path.exists(session.final_path)):
         raise HTTPException(status_code=400, detail="Assembled file not found on disk")
+    source_ctx = (
+        UploadArtifactClient().materialize(artifact_id, session.filename)
+        if artifact_id
+        else nullcontext(session.final_path)
+    )
 
     is_kml = filename_lower.endswith('.kml')
     layer_id = session.layer_id
@@ -329,12 +354,17 @@ async def save_geojson(
     layer_dir = Path(settings.TILES_DIR) / layer_id
     layer_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy GeoJSON or JSON as-is
     dest_path = layer_dir / f"data{file_ext}"
-    shutil.copy2(session.final_path, dest_path)
 
-    # Extract bbox
-    bbox = extract_bbox_from_file(session.final_path)
+    with source_ctx as materialized_source:
+        # prepare_source_path menyamakan behavior dengan flow lokal: KML dikonversi ke GeoJSON.
+        source_path, _ = FileService.prepare_source_path(Path(materialized_source))
+
+        # Copy GeoJSON or JSON as-is
+        shutil.copy2(source_path, dest_path)
+
+        # Extract bbox
+        bbox = extract_bbox_from_file(source_path)
 
     # Create or update layer
     tile_url_template = f"/{layer_id}/data{file_ext}"

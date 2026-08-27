@@ -8,14 +8,14 @@ A tile service that converts geospatial sources (vector `.shp`/GeoJSON/GPKG/KML 
 
 ## Prerequisites
 
-- Python 3.11+ (project uses 3.11.15)
-- Docker (for RabbitMQ)
+- Python 3.12+ (project uses 3.12.13)
+- Docker (for RabbitMQ and image builds)
 
 ## Commands
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Install local development dependencies
+pip install -r requirements-dev.txt
 
 # Copy and configure environment
 cp .env.example .env

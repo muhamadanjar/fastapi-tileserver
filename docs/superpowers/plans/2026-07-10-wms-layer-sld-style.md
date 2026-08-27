@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - **NO git write operations** (`git add/commit/push/...`) — forbidden by project CLAUDE.md. Leave changes in the working tree; the user commits at monorepo root.
-- Python 3.11; run server with `uvicorn app.main:app --reload`.
+- Python 3.12; run server with `uvicorn app.main:app --reload`.
 - GeoServer config comes from `app/core/config.py` settings: `GEOSERVER_URL`, `GEOSERVER_USER`, `GEOSERVER_PASSWORD`, `GEOSERVER_WORKSPACE`.
 - Style name convention: `layer_{layer_id}` inside `settings.GEOSERVER_WORKSPACE`.
 - Simple-style JSON schema (identical to local `VectorTiler` style): geometry keys `Polygon` / `LineString` / `Point`, props `fillColor`, `strokeColor`, `strokeWidth`, `opacity`, `pointRadius`.

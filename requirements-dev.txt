@@ -1,0 +1,3 @@
+# Local development profile: use the monorepo checkout and its test extras.
+-r requirements.txt
+-e ../../libs/service_auth[test]

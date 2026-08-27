@@ -1,6 +1,7 @@
 import asyncio
 import os
 import shutil
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -24,6 +25,7 @@ from app.usecases.getinfo_layer import QueryLayerFeaturesUseCase
 from app.usecases.get_layer_fields import GetLayerFieldsUseCase
 from app.usecases.get_field_unique_values import GetFieldUniqueValuesUseCase
 from app.usecases.get_features_in_bbox import GetFeaturesInBboxUseCase
+from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
 
 router = APIRouter(prefix="/layers", tags=["layers"])
 
@@ -375,11 +377,27 @@ async def sync_layer_bbox(
         session = await upload_repo.get_by_id(layer.upload_session_id)
         if not session or not session.final_path:
             raise HTTPException(status_code=422, detail="Source file path not found in upload session")
-        if not os.path.exists(session.final_path):
+        # Artifact handoff (upload-api): final_path="artifact://<id>", materiakan dulu seperti di tasks.py.
+        artifact_id = (
+            session.final_path.removeprefix("artifact://")
+            if session.final_path.startswith("artifact://")
+            else None
+        )
+        if artifact_id is None and not os.path.exists(session.final_path):
             raise HTTPException(status_code=422, detail="Source file no longer exists on disk")
-        bbox = await asyncio.to_thread(extract_bbox_from_file, session.final_path)
-        if bbox:
-            crs_str = await asyncio.to_thread(get_crs_from_file, session.final_path)
+        source_ctx = (
+            UploadArtifactClient().materialize(artifact_id, session.filename)
+            if artifact_id
+            else nullcontext(session.final_path)
+        )
+        try:
+            with source_ctx as source_path:
+                bbox = await asyncio.to_thread(extract_bbox_from_file, source_path)
+                if bbox:
+                    crs_str = await asyncio.to_thread(get_crs_from_file, source_path)
+        except Exception as exc:
+            # Lease artifact bisa sudah dilepas setelah tiling; beri pesan yang jujur, bukan 500.
+            raise HTTPException(status_code=422, detail=f"Source file unavailable: {exc}")
 
     elif layer.layer_type in EXTERNAL_TYPES:
         params = dict(layer.file_metadata or {}) if layer.file_metadata else {}
@@ -428,7 +446,10 @@ async def retile_layer(
     upload_session = await session_repo.get_by_id(layer.upload_session_id)
     if not upload_session or not upload_session.final_path:
         raise HTTPException(status_code=404, detail="Source file not found")
-    if not Path(upload_session.final_path).exists():
+    # Artifact handoff: worker process_tiling_task sudah handle materialize "artifact://",
+    # jadi jangan tolak di pre-check ini.
+    is_artifact = upload_session.final_path.startswith("artifact://")
+    if not is_artifact and not Path(upload_session.final_path).exists():
         raise HTTPException(status_code=404, detail="Source file missing from disk")
 
     output_format = "mvt" if layer.layer_type == "mvt" else "raster"

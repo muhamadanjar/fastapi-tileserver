@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/anjar/.pyenv/versions/3.11.15/bin/graphify hook-guard search"
+            "command": "/home/anjar/.pyenv/versions/3.12.13/bin/graphify hook-guard search"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/home/anjar/.pyenv/versions/3.11.15/bin/graphify hook-guard read"
+            "command": "/home/anjar/.pyenv/versions/3.12.13/bin/graphify hook-guard read"
           }
         ]
       }
