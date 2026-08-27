@@ -9,7 +9,7 @@ from app.infrastructure.db.connection import db
 from app.infrastructure.db.repository import SyncUploadSessionRepository, SyncLayerRepository
 from app.infrastructure.services.tiling_service import TilingService
 from app.infrastructure.services.csw_sync import sync_layer
-from app.domain.models import JobStatus, Layer
+from app.domain.models import JobStatus, Layer, LayerType
 from app.core.utils import slugify, generate_unique_code_sync
 from app.infrastructure.services.file_service import FileService
 from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
@@ -51,6 +51,105 @@ def _release_artifact_lease(artifact_id: Optional[str], lease_id: Optional[str])
         print(f"[tiling] Released artifact lease {lease_id} for {artifact_id}")
     except Exception as exc:
         print(f"[tiling] Failed to release artifact lease {lease_id} for {artifact_id}: {exc}")
+
+@celery_app.task(bind=True, max_retries=3)
+def publish_geoserver_task(self, upload_id: str, layer_id: str, code: str):
+    """Publish an uploaded .shp/.zip to GeoServer in the background.
+
+    Large files previously blocked the HTTP request until the proxy timed
+    out (502). Mirrors the old synchronous endpoint body, but runs in a
+    worker; the caller polls /uploads/{id}/status.
+    """
+    from app.infrastructure.services.geoserver_service import GeoServerService
+    from app.infrastructure.services.bbox_extractor import extract_bbox_from_file, get_crs_from_file
+    from app.core.config import settings
+
+    artifact_id = None
+    artifact_lease_id = None
+    filename = None
+    local_path = None
+    try:
+        with db.get_session() as session:
+            repo = SyncUploadSessionRepository(session)
+            current = repo.get_by_id(upload_id)
+            if not current:
+                print(f"[geoserver] Upload {upload_id} not found, aborting.")
+                return
+            artifact_id = current.artifact_id
+            artifact_lease_id = current.artifact_lease_id
+            filename = current.filename
+            if current.final_path and not current.final_path.startswith("artifact://"):
+                local_path = current.final_path
+            repo.set_status(upload_id, JobStatus.processing)
+
+        svc = GeoServerService(
+            url=settings.GEOSERVER_URL,
+            username=settings.GEOSERVER_USER,
+            password=settings.GEOSERVER_PASSWORD,
+            workspace=settings.GEOSERVER_WORKSPACE,
+        )
+        source_ctx = (
+            UploadArtifactClient().materialize(artifact_id, filename or "artifact.bin")
+            if artifact_id is not None
+            else nullcontext(local_path)
+        )
+        with source_ctx as materialized:
+            result = svc.publish_shp(materialized, code)
+            bbox = extract_bbox_from_file(materialized) or result.get("bbox")
+            crs_str = get_crs_from_file(materialized) if bbox else None
+
+        geoserver_meta = {**result}
+        if crs_str:
+            geoserver_meta["crs"] = crs_str
+
+        with db.get_session() as session:
+            layer_repo = SyncLayerRepository(session)
+            existing = layer_repo.get_by_id(layer_id)
+            if existing:
+                existing.layer_type = LayerType.wms
+                existing.tile_url_template = result["wms_url"]
+                existing.file_metadata = {
+                    "geoserver": geoserver_meta,
+                    "layers": geoserver_meta.get("layer_name"),
+                }
+                existing.bbox_west = bbox[0] if bbox else None
+                existing.bbox_south = bbox[1] if bbox else None
+                existing.bbox_east = bbox[2] if bbox else None
+                existing.bbox_north = bbox[3] if bbox else None
+                _sa_attrs.flag_modified(existing, "file_metadata")
+                session.add(existing)
+                session.commit()
+            else:
+                upload_session = SyncUploadSessionRepository(session).get_by_id(upload_id)
+                layer = Layer(
+                    id=layer_id,
+                    upload_session_id=upload_id,
+                    code=code,
+                    layer_type=LayerType.wms,
+                    filename=upload_session.filename,
+                    file_type="external",
+                    tile_url_template=result["wms_url"],
+                    file_metadata={"geoserver": geoserver_meta, "layers": geoserver_meta.get("layer_name")},
+                    bbox_west=bbox[0] if bbox else None,
+                    bbox_south=bbox[1] if bbox else None,
+                    bbox_east=bbox[2] if bbox else None,
+                    bbox_north=bbox[3] if bbox else None,
+                )
+                layer_repo.create(layer)
+            SyncUploadSessionRepository(session).set_status(upload_id, JobStatus.done)
+        _release_artifact_lease(artifact_id, artifact_lease_id)
+        print(f"[geoserver] Published {code} for upload {upload_id}")
+    except Exception as exc:
+        with db.get_session() as session:
+            repo = SyncUploadSessionRepository(session)
+            current = repo.get_by_id(upload_id)
+            if current and current.status != JobStatus.cancelled:
+                repo.set_status(upload_id, JobStatus.failed, str(exc))
+        will_retry = not isinstance(exc, SystemExit) and self.request.retries < self.max_retries
+        if not will_retry:
+            _release_artifact_lease(artifact_id, artifact_lease_id)
+        if not isinstance(exc, SystemExit):
+            raise self.retry(exc=exc, countdown=5)
 
 @celery_app.task(bind=True, max_retries=3)
 def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, source_path: str, output_format: str = "raster", max_zoom: int = None):

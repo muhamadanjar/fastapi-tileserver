@@ -31,9 +31,7 @@ from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import UploadSessionRepository, LayerRepository
 from app.usecases.init_chunked_upload import InitChunkedUploadUseCase
 from app.usecases.receive_chunk import ReceiveChunkUseCase
-from app.workers.tasks import process_tiling_task
-from app.infrastructure.services.geoserver_service import GeoServerService
-from app.infrastructure.services.bbox_extractor import extract_bbox_from_file
+from app.workers.tasks import process_tiling_task, publish_geoserver_task
 from app.infrastructure.services.file_service import FileService
 from app.infrastructure.services.upload_artifact_client import UploadArtifactClient, UploadArtifactClientError
 from app.domain.models import UploadSession
@@ -210,20 +208,10 @@ async def publish_to_geoserver(
             detail=f"Cannot publish from status '{session.status}'. Must be 'uploaded' or 'failed'.",
         )
 
-    # Artifact handoff (upload-api) menyimpan final_path="artifact://<id>", bukan file lokal:
-    # materiakan dulu ke temp dir via upload-api, sama seperti proses tiling di tasks.py.
-    artifact_id = (
-        session.final_path.removeprefix("artifact://")
-        if session.final_path and session.final_path.startswith("artifact://")
-        else None
-    )
-    if artifact_id is None and (not session.final_path or not os.path.exists(session.final_path)):
+    # Artifact handoff (upload-api) menyimpan final_path="artifact://<id>"; the worker
+    # materializes it via upload-api. Local files must exist on disk (fast fail).
+    if session.final_path and not session.final_path.startswith("artifact://") and not os.path.exists(session.final_path):
         raise HTTPException(status_code=400, detail="Assembled file not found on disk")
-    source_ctx = (
-        UploadArtifactClient().materialize(artifact_id, session.filename)
-        if artifact_id
-        else nullcontext(session.final_path)
-    )
 
     await repo.set_status(upload_id, JobStatus.processing)
 
@@ -232,71 +220,14 @@ async def publish_to_geoserver(
     base_code = slugify(filename_without_ext)
     code = await generate_unique_code(base_code, layer_repo.code_exists)
 
-    with source_ctx as source_path:
-        try:
-            svc = GeoServerService(
-                url=settings.GEOSERVER_URL,
-                username=settings.GEOSERVER_USER,
-                password=settings.GEOSERVER_PASSWORD,
-                workspace=settings.GEOSERVER_WORKSPACE,
-            )
-            result = svc.publish_shp(source_path, code)
-        except Exception as exc:
-            await repo.set_status(upload_id, JobStatus.failed, str(exc))
-            raise HTTPException(status_code=502, detail=f"GeoServer publish failed: {exc}")
-
-        from app.infrastructure.services.bbox_extractor import extract_bbox_from_file, get_crs_from_file
-
-        # bbox: prioritas dari file lokal, fallback hasil recalculate GeoServer
-        bbox = extract_bbox_from_file(source_path) or result.get("bbox")
-        crs_str = get_crs_from_file(source_path) if bbox else None
-
-    geoserver_meta = {**result}
-    if crs_str:
-        geoserver_meta['crs'] = crs_str
-
-    existing_layer = await layer_repo.get_by_id(layer_id)
-    if existing_layer:
-        await layer_repo.update(
-            layer_id=layer_id,
-            layer_type=LayerType.wms,
-            tile_url_template=result["wms_url"],
-            file_metadata={
-                "geoserver": geoserver_meta,
-                "layers": geoserver_meta.get("layer_name"),
-            },
-            bbox_west=bbox[0] if bbox else None,
-            bbox_south=bbox[1] if bbox else None,
-            bbox_east=bbox[2] if bbox else None,
-            bbox_north=bbox[3] if bbox else None,
-        )
-    else:
-        layer = Layer(
-            id=layer_id,
-            upload_session_id=upload_id,
-            code=code,
-            layer_type=LayerType.wms,
-            filename=session.filename,
-            file_type='external',
-            tile_url_template=result["wms_url"],
-            file_metadata={"geoserver": geoserver_meta, "layers": geoserver_meta.get("layer_name")},
-            bbox_west=bbox[0] if bbox else None,
-            bbox_south=bbox[1] if bbox else None,
-            bbox_east=bbox[2] if bbox else None,
-            bbox_north=bbox[3] if bbox else None,
-        )
-        await layer_repo.create(layer)
-
-    await repo.set_status(upload_id, JobStatus.done)
+    task = publish_geoserver_task.delay(upload_id=upload_id, layer_id=layer_id, code=code)
+    await repo.set_task_id(upload_id, task.id)
 
     return {
-        "message": "Layer published to GeoServer",
+        "message": "GeoServer publish started",
         "upload_id": upload_id,
         "layer_id": layer_id,
-        "layer_name": result["layer_name"],
-        "wms_url": result["wms_url"],
-        "wfs_url": result["wfs_url"],
-        "workspace": result["workspace"],
+        "status": "processing",
     }
 
 
