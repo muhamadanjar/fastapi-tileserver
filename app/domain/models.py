@@ -16,6 +16,16 @@ class JobStatus(str, enum.Enum):
     expired = "expired"
     cancelled = "cancelled"
 
+
+class ImportStatus(str, enum.Enum):
+    not_applicable = "not_applicable"
+    pending = "pending"
+    processing = "processing"
+    completed = "completed"
+    failed = "failed"
+    cancelled = "cancelled"
+
+
 class LayerType(str, enum.Enum):
     tile = "tile"
     mvt = "mvt"
@@ -30,6 +40,7 @@ class LayerType(str, enum.Enum):
     esri_tileserver = "esri_tileserver"
     esri_vectortileserver = "esri_vectortileserver"
     esri_imageserver = "esri_imageserver"
+    postgis = "postgis"
 
 
 
@@ -56,6 +67,14 @@ class UploadSession(SQLModel, table=True):
     artifact_id: Optional[str] = Field(default=None, index=True)
     artifact_lease_id: Optional[str] = Field(default=None)
     artifact_handoff_id: Optional[str] = Field(default=None, unique=True, index=True)
+    import_status: str = Field(default=ImportStatus.not_applicable)
+    import_task_id: Optional[str] = Field(default=None)
+    import_error: Optional[str] = Field(default=None, sa_column=Column(Text()))
+    import_table_name: Optional[str] = Field(default=None)
+    import_processed_rows: int = Field(default=0)
+    import_total_rows: int = Field(default=0)
+    imported_row_count: Optional[int] = Field(default=None)
+    imported_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
     expires_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))

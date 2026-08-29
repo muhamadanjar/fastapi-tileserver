@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes as _sa_attrs
 from sqlmodel import Session
 
-from app.domain.models import UploadSession, Layer, JobStatus, Project, Feature, Attachment
+from app.domain.models import UploadSession, Layer, JobStatus, ImportStatus, Project, Feature, Attachment
 from sqlalchemy.orm import attributes
 from app.core.exceptions import SessionNotFoundError
 
@@ -89,6 +89,35 @@ class UploadSessionRepository:
             self.session.add(session_obj)
             await self.session.commit()
 
+    async def queue_import(self, upload_id: str, task_id: str, table_name: str) -> None:
+        session_obj = await self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.import_status = ImportStatus.pending
+            session_obj.import_task_id = task_id
+            session_obj.import_error = None
+            session_obj.import_table_name = table_name
+            session_obj.import_processed_rows = 0
+            session_obj.import_total_rows = 0
+            session_obj.imported_row_count = None
+            session_obj.imported_at = None
+            session_obj.updated_at = datetime.now(timezone.utc)
+            self.session.add(session_obj)
+            await self.session.commit()
+
+    async def set_import_status(
+        self,
+        upload_id: str,
+        status: ImportStatus,
+        error: Optional[str] = None,
+    ) -> None:
+        session_obj = await self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.import_status = status
+            session_obj.import_error = error
+            session_obj.updated_at = datetime.now(timezone.utc)
+            self.session.add(session_obj)
+            await self.session.commit()
+
     async def start_tiling(
         self,
         upload_id: str,
@@ -142,6 +171,46 @@ class SyncUploadSessionRepository:
         session_obj = self.get_by_id(upload_id)
         if session_obj:
             session_obj.celery_task_id = task_id
+            self.session.add(session_obj)
+            self.session.commit()
+
+    def set_import_status(
+        self,
+        upload_id: str,
+        status: ImportStatus,
+        error: Optional[str] = None,
+    ) -> None:
+        session_obj = self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.import_status = status
+            session_obj.import_error = error
+            session_obj.updated_at = datetime.now(timezone.utc)
+            self.session.add(session_obj)
+            self.session.commit()
+
+    def update_import_progress(self, upload_id: str, processed: int, total: int) -> None:
+        session_obj = self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.import_processed_rows = processed
+            session_obj.import_total_rows = total
+            session_obj.updated_at = datetime.now(timezone.utc)
+            self.session.add(session_obj)
+            self.session.commit()
+
+    def complete_import(
+        self, upload_id: str, row_count: int, table_name: Optional[str] = None
+    ) -> None:
+        session_obj = self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.import_status = ImportStatus.completed
+            session_obj.import_error = None
+            session_obj.import_processed_rows = row_count
+            session_obj.import_total_rows = row_count
+            session_obj.imported_row_count = row_count
+            if table_name:
+                session_obj.import_table_name = table_name
+            session_obj.imported_at = datetime.now(timezone.utc)
+            session_obj.updated_at = datetime.now(timezone.utc)
             self.session.add(session_obj)
             self.session.commit()
 
@@ -360,6 +429,16 @@ class LayerRepository:
             select(Layer).where(Layer.code == code)
         )
         return result.scalars().first() is not None
+
+    async def find_geoserver_layer_name(self, layer_name: str) -> Optional[Layer]:
+        """Return the first layer whose geoserver.layer_name == given value.
+        Used to reject duplicate WMS publishes of the same file/base."""
+        result = await self.session.execute(
+            select(Layer).where(
+                Layer.file_metadata["geoserver"]["layer_name"].as_string() == layer_name
+            )
+        )
+        return result.scalars().first()
 
     async def delete(self, layer_id: str) -> bool:
         layer = await self.get_by_id(layer_id)

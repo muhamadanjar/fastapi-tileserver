@@ -10,7 +10,7 @@ from defusedxml.ElementTree import fromstring as safe_fromstring, ParseError as 
 
 from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse
 from app.domain.models import Layer, JobStatus
-from app.infrastructure.db.connection import get_async_session
+from app.infrastructure.db.connection import db, get_async_session
 from app.infrastructure.db.repository import LayerRepository, ProjectRepository, UploadSessionRepository
 from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_csw
 from app.infrastructure.services.geoserver_service import GeoServerService, GeoServerStyleError
@@ -316,6 +316,12 @@ async def put_layer_style(
     except GeoServerStyleError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.detail)
 
+    # Verify the style actually landed as the layer default (guards against
+    # silent grey maps when the target layer name is wrong/duplicated).
+    default_style_name = await asyncio.to_thread(svc.get_default_style, gs_meta["layer_name"])
+    expected = f"{settings.GEOSERVER_WORKSPACE}:{style_name}"
+    style_verified = default_style_name == expected
+
     updated = await repo.update(
         layer_id,
         file_metadata={
@@ -347,6 +353,8 @@ async def put_layer_style(
         abstract=updated.abstract,
         topic_category=updated.topic_category,
         language=updated.language,
+        style_verified=style_verified,
+        default_style_name=default_style_name,
     )
 
 
@@ -642,6 +650,20 @@ def _fmt_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} TB"
 
 
+def _postgis_table_names(postgis: dict) -> list[str]:
+    datasets = postgis.get("datasets") or []
+    tables = [
+        dataset["table"]
+        for dataset in datasets
+        if isinstance(dataset, dict)
+        and dataset.get("schema", "geodata") == "geodata"
+        and dataset.get("table")
+    ]
+    if not tables and postgis.get("schema") == "geodata" and postgis.get("table"):
+        tables.append(postgis["table"])
+    return list(dict.fromkeys(tables))
+
+
 @router.get("/{layer_id}/delete-preview")
 async def get_delete_preview(
     layer_id: str,
@@ -656,6 +678,14 @@ async def get_delete_preview(
 
     # DB record — always present
     items.append({"type": "db_record", "label": "Layer record", "detail": layer.filename})
+
+    postgis = (layer.file_metadata or {}).get("postgis") or {}
+    for table_name in _postgis_table_names(postgis):
+        items.append({
+            "type": "postgis_table",
+            "label": "PostGIS table",
+            "detail": f"geodata.{table_name}",
+        })
 
     # Tile files on disk
     tile_dir = Path(settings.TILES_DIR) / layer_id
@@ -706,6 +736,25 @@ async def delete_layer(
     upload_session = None
     if upload_session_id:
         upload_session = await session_repo.get_by_id(upload_session_id)
+
+    # Drop the owned dynamic table before any other destructive work. If this
+    # fails, retain the Layer and its other files so deletion can be retried.
+    postgis = (layer.file_metadata or {}).get("postgis") or {}
+    postgis_tables = _postgis_table_names(postgis)
+    if postgis_tables:
+        from app.infrastructure.services.shapefile_import_service import drop_geodata_tables
+
+        try:
+            await asyncio.to_thread(
+                drop_geodata_tables,
+                db.get_engine(),
+                postgis_tables,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to drop PostGIS tables {', '.join(postgis_tables)}: {exc}",
+            ) from exc
 
     # 1. Delete tile files from disk
     tile_dir = Path(settings.TILES_DIR) / layer_id

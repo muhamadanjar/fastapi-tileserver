@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     # Chunked upload threshold in bytes (default 10 MB)
     CHUNK_UPLOAD_THRESHOLD: int = 10_485_760
 
+    # Automatic shapefile-to-PostGIS import
+    SHP_IMPORT_MAX_UNCOMPRESSED_BYTES: int = Field(
+        default=1024 * 1024 * 1024, env="SHP_IMPORT_MAX_UNCOMPRESSED_BYTES"
+    )
+    SHP_IMPORT_MAX_FEATURES: int = Field(default=1_000_000, env="SHP_IMPORT_MAX_FEATURES")
+    SHP_IMPORT_BATCH_SIZE: int = Field(default=5_000, env="SHP_IMPORT_BATCH_SIZE")
+    SHP_IMPORT_MAX_COMPRESSION_RATIO: int = Field(
+        default=200, env="SHP_IMPORT_MAX_COMPRESSION_RATIO"
+    )
+
     # Esri Download
     ESRI_MAX_WORKERS: int = Field(default=4, env="ESRI_MAX_WORKERS")
     ESRI_IGNORE_SSL: bool = Field(default=False, env="ESRI_IGNORE_SSL")

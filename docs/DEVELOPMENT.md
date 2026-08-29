@@ -365,14 +365,33 @@ def publish_kml(self, file_path, store_name):
 
 ### Deploy to Docker
 
-1. Build the production image with the repository's multi-stage
-   [`docker/Dockerfile`](../docker/Dockerfile):
+The Compose configuration keeps the application and its infrastructure
+independent. By default, database, RabbitMQ, Redis, and GeoServer are expected
+to be externally managed. Configure their endpoints with the `TILESERVER_*`
+variables documented in [Docker Compose Optional Infrastructure](features/docker-compose-optional-infrastructure.md).
+
+To run development containers with external infrastructure:
+
 ```bash
-make docker-build
+make docker-up-dev
 ```
 
-2. Create `docker-compose.yml` with FastAPI + Celery + RabbitMQ + PostgreSQL
-3. `docker-compose up`
+To provision the local infrastructure profile, point the application at the
+Compose service names and then start both profiles:
+
+```bash
+export TILESERVER_DB_HOST=postgres
+export TILESERVER_RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+export TILESERVER_REDIS_URL=redis://redis:6379/0
+export TILESERVER_GEOSERVER_URL=http://geoserver:8080/geoserver
+docker compose --profile infrastructure --profile development up --build
+```
+
+For a production-target application image with external infrastructure:
+
+```bash
+make docker-up-prod
+```
 
 ### Scale Celery Workers
 

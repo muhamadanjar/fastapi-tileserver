@@ -37,6 +37,54 @@ celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
 
 API docs available at `http://localhost:8080/docs`
 
+## Docker
+
+Docker Compose provides separate application profiles for development and
+production. PostgreSQL/PostGIS, RabbitMQ, Redis, and GeoServer are optional:
+they are only created when the `infrastructure` profile is explicitly enabled.
+This lets the API and Celery worker use managed or otherwise external services.
+
+### Development with external infrastructure
+
+Configure the external endpoints with `TILESERVER_*` variables when needed,
+then start the development API and worker. Source files are mounted into the
+containers and Uvicorn reload is enabled.
+
+```bash
+make docker-up-dev
+```
+
+### Development with local infrastructure
+
+Set the application endpoints to the Compose service names, then start the two
+profiles together:
+
+```bash
+export TILESERVER_DB_HOST=postgres
+export TILESERVER_RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+export TILESERVER_REDIS_URL=redis://redis:6379/0
+export TILESERVER_GEOSERVER_URL=http://geoserver:8080/geoserver
+docker compose --profile infrastructure --profile development up --build
+```
+
+### Production target
+
+The production profile uses the minimal `production` target from
+`docker/Dockerfile` and runs both the API and worker:
+
+```bash
+make docker-up-prod
+```
+
+Stop Compose services with:
+
+```bash
+make docker-down
+```
+
+For all configuration variables and usage details, see
+[Docker Compose with Optional Infrastructure](docs/features/docker-compose-optional-infrastructure.md).
+
 ## Version Management
 
 Releases are fully managed by [semantic-release](https://semantic-release.gitbook.io/semantic-release/). On every push to `main` or `master`, it analyzes Conventional Commit messages, calculates the next semantic version, creates the Git tag and GitHub Release, and generates release notes. Git tags have no `v` prefix, such as `0.0.1`.

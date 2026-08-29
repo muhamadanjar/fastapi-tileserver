@@ -12,6 +12,9 @@ class TilingProcessError(TileServerException):
         self.message = f"Error during tiling process: {detail}"
         super().__init__(self.message)
 
+class TilingCancelled(Exception):
+    """Raised to abort an in-progress tiling job cooperatively."""
+
 class FileSaveError(TileServerException):
     def __init__(self, detail: str):
         self.message = f"Failed to save file: {detail}"

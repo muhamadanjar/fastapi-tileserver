@@ -7,6 +7,8 @@ from pathlib import Path
 import requests
 from geo.Geoserver import Geoserver
 
+from app.core.style_utils import convert_sld_11_to_10
+
 logger = logging.getLogger(__name__)
 
 
@@ -157,6 +159,7 @@ class GeoServerService:
         fallback from PUT->POST is not safe.
         """
         headers = {"Content-Type": "application/vnd.ogc.sld+xml"}
+        sld_body = convert_sld_11_to_10(sld_body)
         style_url = f"{self._base_url}/rest/workspaces/{self.workspace}/styles/{style_name}"
         try:
             exists_resp = requests.get(
@@ -198,3 +201,15 @@ class GeoServerService:
                 )
         except requests.RequestException as exc:
             raise GeoServerStyleError(502, f"GeoServer unreachable: {exc}")
+
+    def get_default_style(self, layer_name: str) -> str | None:
+        """Return the default style name currently set for a layer, or None if
+        the layer/style is unreachable. layer_name is 'workspace:store'."""
+        url = f"{self._base_url}/rest/layers/{layer_name}.json"
+        try:
+            resp = requests.get(url, auth=self._auth, timeout=30)
+            if resp.status_code != 200:
+                return None
+            return ((resp.json().get("layer") or {}).get("defaultStyle") or {}).get("name")
+        except requests.RequestException:
+            return None

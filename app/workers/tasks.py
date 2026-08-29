@@ -9,13 +9,14 @@ from app.infrastructure.db.connection import db
 from app.infrastructure.db.repository import SyncUploadSessionRepository, SyncLayerRepository
 from app.infrastructure.services.tiling_service import TilingService
 from app.infrastructure.services.csw_sync import sync_layer
-from app.domain.models import JobStatus, Layer, LayerType
+from app.domain.models import ImportStatus, JobStatus, Layer, LayerType
 from app.core.utils import slugify, generate_unique_code_sync
 from app.infrastructure.services.file_service import FileService
 from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
 
 
-def _make_progress_callback(layer_id: str):
+def _make_progress_callback(layer_id: str, upload_id: str):
+    from app.core.exceptions import TilingCancelled
     state = {"last": None}
 
     def callback(progress: dict) -> None:
@@ -23,8 +24,13 @@ def _make_progress_callback(layer_id: str):
         state["last"] = payload
         try:
             with db.get_session() as session:
+                current = SyncUploadSessionRepository(session).get_by_id(upload_id)
+                if current and current.status == JobStatus.cancelled:
+                    raise TilingCancelled(f"Tiling for {upload_id} was cancelled")
                 SyncLayerRepository(session).update_progress(layer_id, payload)
                 print(f"[progress] Updated {layer_id}: {payload.get('percent', 0)}%")
+        except TilingCancelled:
+            raise
         except Exception as exc:
             print(f"[progress] Failed to write progress for {layer_id}: {exc}")
 
@@ -51,6 +57,132 @@ def _release_artifact_lease(artifact_id: Optional[str], lease_id: Optional[str])
         print(f"[tiling] Released artifact lease {lease_id} for {artifact_id}")
     except Exception as exc:
         print(f"[tiling] Failed to release artifact lease {lease_id} for {artifact_id}: {exc}")
+
+
+@celery_app.task(bind=True, max_retries=3)
+def import_shapefile_task(self, upload_id: str):
+    """Validate and atomically import every shapefile dataset in one ZIP."""
+    from app.core.config import settings
+    from app.infrastructure.services.shapefile_import_service import (
+        ShapefileConfigurationError,
+        ShapefileImportCancelled,
+        ShapefileValidationError,
+        import_shapefile_to_postgis,
+    )
+
+    with db.get_session() as session:
+        repo = SyncUploadSessionRepository(session)
+        current = repo.get_by_id(upload_id)
+        if not current:
+            print(f"[shp-import] Upload {upload_id} not found, aborting.")
+            return
+        if current.import_status == ImportStatus.cancelled:
+            print(f"[shp-import] Upload {upload_id} was cancelled before start.")
+            return
+        filename = current.filename
+        artifact_id = current.artifact_id
+        local_path = (
+            current.final_path
+            if current.final_path and not current.final_path.startswith("artifact://")
+            else None
+        )
+        layer_id = current.layer_id
+        table_name = current.import_table_name
+        repo.set_import_status(upload_id, ImportStatus.processing)
+
+    def progress(processed: int, total: int) -> None:
+        with db.get_session() as progress_session:
+            progress_repo = SyncUploadSessionRepository(progress_session)
+            latest = progress_repo.get_by_id(upload_id)
+            if latest and latest.import_status == ImportStatus.cancelled:
+                raise ShapefileImportCancelled(f"Import {upload_id} was cancelled")
+            progress_repo.update_import_progress(upload_id, processed, total)
+
+    source_context = (
+        UploadArtifactClient().materialize(artifact_id, filename)
+        if artifact_id
+        else nullcontext(Path(local_path) if local_path else None)
+    )
+
+    try:
+        if not table_name:
+            raise ShapefileValidationError("Import table name is missing")
+        with source_context as source_path:
+            if source_path is None:
+                raise ShapefileValidationError("Uploaded ZIP is no longer available")
+            result = import_shapefile_to_postgis(
+                zip_path=Path(source_path),
+                engine=db.get_engine(),
+                upload_id=upload_id,
+                table_name=table_name,
+                layer_id=layer_id,
+                max_uncompressed_bytes=settings.SHP_IMPORT_MAX_UNCOMPRESSED_BYTES,
+                max_features=settings.SHP_IMPORT_MAX_FEATURES,
+                max_compression_ratio=settings.SHP_IMPORT_MAX_COMPRESSION_RATIO,
+                batch_size=settings.SHP_IMPORT_BATCH_SIZE,
+                progress_callback=progress,
+            )
+
+        with db.get_session() as session:
+            upload_repo = SyncUploadSessionRepository(session)
+            layer_repo = SyncLayerRepository(session)
+            layer = layer_repo.get_by_id(layer_id)
+            metadata = result.metadata()
+            if layer:
+                existing_metadata = dict(layer.file_metadata or {})
+                existing_metadata["postgis"] = metadata
+                layer.file_metadata = existing_metadata
+                if not layer.tile_url_template:
+                    layer.layer_type = LayerType.postgis
+                layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north = result.bbox
+                _sa_attrs.flag_modified(layer, "file_metadata")
+                session.add(layer)
+                session.commit()
+            else:
+                filename_without_ext = Path(filename).stem
+                base_code = slugify(filename_without_ext)
+                unique_code = generate_unique_code_sync(base_code, layer_repo.code_exists)
+                layer = Layer(
+                    id=layer_id,
+                    upload_session_id=upload_id,
+                    code=unique_code,
+                    layer_type=LayerType.postgis,
+                    filename=filename,
+                    file_type="vector",
+                    tile_url_template="",
+                    is_active=False,
+                    is_visible=False,
+                    file_metadata={"postgis": metadata},
+                    bbox_west=result.bbox[0],
+                    bbox_south=result.bbox[1],
+                    bbox_east=result.bbox[2],
+                    bbox_north=result.bbox[3],
+                )
+                layer_repo.create(layer)
+            upload_repo.complete_import(upload_id, result.row_count, result.primary_table)
+        print(
+            f"[shp-import] Imported {result.row_count} rows into "
+            f"{len(result.datasets)} geodata tables"
+        )
+        return metadata
+    except ShapefileImportCancelled:
+        with db.get_session() as session:
+            SyncUploadSessionRepository(session).set_import_status(
+                upload_id, ImportStatus.cancelled
+            )
+        print(f"[shp-import] Import {upload_id} cancelled.")
+        return
+    except Exception as exc:
+        with db.get_session() as session:
+            repo = SyncUploadSessionRepository(session)
+            current = repo.get_by_id(upload_id)
+            if current and current.import_status != ImportStatus.cancelled:
+                repo.set_import_status(upload_id, ImportStatus.failed, str(exc))
+        if isinstance(exc, (ShapefileValidationError, ShapefileConfigurationError)):
+            raise
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc, countdown=5)
+        raise
 
 @celery_app.task(bind=True, max_retries=3)
 def publish_geoserver_task(self, upload_id: str, layer_id: str, code: str):
@@ -108,10 +240,12 @@ def publish_geoserver_task(self, upload_id: str, layer_id: str, code: str):
             if existing:
                 existing.layer_type = LayerType.wms
                 existing.tile_url_template = result["wms_url"]
-                existing.file_metadata = {
+                existing_metadata = dict(existing.file_metadata or {})
+                existing_metadata.update({
                     "geoserver": geoserver_meta,
                     "layers": geoserver_meta.get("layer_name"),
-                }
+                })
+                existing.file_metadata = existing_metadata
                 existing.bbox_west = bbox[0] if bbox else None
                 existing.bbox_south = bbox[1] if bbox else None
                 existing.bbox_east = bbox[2] if bbox else None
@@ -209,7 +343,7 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
             if existing and existing.file_metadata:
                 style = existing.file_metadata.get("style")
 
-        progress_cb, finalize_progress = _make_progress_callback(layer_id)
+        progress_cb, finalize_progress = _make_progress_callback(layer_id, upload_id)
         artifact_id = source_path.removeprefix("artifact://") if source_path.startswith("artifact://") else None
         source_context = (
             UploadArtifactClient().materialize(artifact_id, artifact_filename or "artifact.bin")
@@ -287,6 +421,15 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
                     except Exception:
                         pass
     except Exception as exc:
+        from app.core.exceptions import TilingCancelled
+        if isinstance(exc, TilingCancelled):
+            _release_artifact_lease(artifact_id, artifact_lease_id)
+            with db.get_session() as session:
+                repo = SyncUploadSessionRepository(session)
+                repo.set_status(upload_id, JobStatus.cancelled)
+            print(f"[tiling] Task {upload_id} cancelled.")
+            return
+
         # Write failed status to tile_process
         try:
             with db.get_session() as session:

@@ -64,8 +64,6 @@ def process_revision_directives(context, revision, directives):
             if directive.upgrade_ops.is_empty():
                 return
             directive.revision = get_next_revision_id()
-            if directive.down_revision:
-                directive.down_revision = directive.down_revision
             directive.branch_labels = None
 
 

@@ -1,0 +1,13 @@
+.git
+.env
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+data
+logs
+graphify-out
+docs
+tests

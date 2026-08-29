@@ -66,6 +66,28 @@ class ChunkUploadResponse(BaseModel):
     tile_url_template: Optional[str] = None
 
 
+class ShapefileImportedTable(BaseModel):
+    schema_name: str = Field(default="geodata", serialization_alias="schema")
+    table: str
+    geometry_family: Optional[str] = None
+    row_count: int
+    bbox: Optional[list[float]] = None
+
+
+class ShapefileImportStatus(BaseModel):
+    status: str
+    task_id: Optional[str] = None
+    schema_name: str = Field(default="geodata", serialization_alias="schema")
+    table: Optional[str] = None
+    processed_rows: int = 0
+    total_rows: int = 0
+    progress_percent: float = 0.0
+    row_count: Optional[int] = None
+    tables: list[ShapefileImportedTable] = Field(default_factory=list)
+    error: Optional[str] = None
+    imported_at: Optional[datetime] = None
+
+
 class JobStatusResponse(BaseModel):
     upload_id: str
     layer_id: str
@@ -79,6 +101,7 @@ class JobStatusResponse(BaseModel):
     error_message: Optional[str] = None
     tile_url_template: Optional[str] = None
     bbox: Optional[list[float]] = None
+    import_process: ShapefileImportStatus = Field(serialization_alias="import")
 
 
 class LayerResponse(BaseModel):
@@ -96,6 +119,8 @@ class LayerResponse(BaseModel):
     abstract: Optional[str] = None
     topic_category: Optional[str] = None
     language: Optional[str] = None
+    style_verified: Optional[bool] = None
+    default_style_name: Optional[str] = None
 
 
 class PatchLayerRequest(BaseModel):

@@ -23,7 +23,7 @@ class FileService:
     def allowed_file(filename: str) -> str:
         """Returns file_type ('vector' or 'raster') or raises UnsupportedFileFormatException."""
         ext = Path(filename).suffix.lower()
-        if ext in {".shp", ".geojson", ".json", ".gpkg", ".kml", ".zip"}:
+        if ext in {".geojson", ".json", ".gpkg", ".kml", ".zip"}:
             return "vector"
         elif ext in {".tif", ".tiff", ".img", ".png", ".jpg"}:
             return "raster"
@@ -74,14 +74,13 @@ class FileService:
     def prepare_source_path(saved_path: Path) -> Tuple[Path, str]:
         """
         Given a saved file path, returns the actual tiling source path and file_type.
-        For ZIP files, extracts and returns the .shp path.
+        ZIP files stay intact so validation and extraction happen in the Celery
+        import worker rather than blocking the upload request.
         For KML files, converts to GeoJSON and returns .geojson path.
         Reusable by both direct upload and chunked assembly flows.
         """
         file_type = FileService.allowed_file(saved_path.name)
-        if saved_path.suffix.lower() == ".zip":
-            return FileService.extract_zip(saved_path), "vector"
-        elif saved_path.suffix.lower() == ".kml":
+        if saved_path.suffix.lower() == ".kml":
             geojson_path = FileService.convert_kml_to_geojson(saved_path)
             return geojson_path, "vector"
         return saved_path, file_type
