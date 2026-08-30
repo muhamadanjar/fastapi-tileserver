@@ -153,21 +153,38 @@ class QueryLayerFeaturesUseCase:
         # Parse URL untuk handle existing params
         parsed = urlparse(wms_url)
         existing_params = parse_qs(parsed.query)
-        params = {k: v[0] if isinstance(v, list) else v for k, v in existing_params.items()}
+        # WMS parameter names are case-insensitive. URLs pasted manually often
+        # still contain uppercase GetMap parameters; keeping both REQUEST and
+        # request makes GeoServer pick the stale GetMap value on some setups.
+        params = {
+            key.lower(): values[0] if isinstance(values, list) else values
+            for key, values in existing_params.items()
+        }
 
         # Get layer name dari metadata
         layer_name = None
-        if layer.file_metadata and 'geoserver' in layer.file_metadata:
-            layer_name = layer.file_metadata.get('geoserver', {}).get('layer_name')
-        if not layer_name and layer.file_metadata and 'layers' in layer.file_metadata:
-            layer_name = layer.file_metadata['layers']
+        metadata = layer.file_metadata or {}
+        geoserver_metadata = metadata.get('geoserver') or {}
+        if isinstance(geoserver_metadata, dict):
+            layer_name = geoserver_metadata.get('layer_name')
         if not layer_name:
-            layer_name = params.get('layers') or params.get('LAYERS')
+            metadata_params = {str(key).lower(): value for key, value in metadata.items()}
+            layer_name = metadata_params.get('layers') or metadata_params.get('layer')
+        if not layer_name:
+            layer_name = params.get('layers')
 
         if not layer_name:
             return FeatureQueryResponse(type='vector', count=0, features=[])
 
         # Build GetFeatureInfo request
+        # Drop map/pixel parameters from a pasted GetMap/GetFeatureInfo URL so
+        # the request below has exactly one canonical value for every key.
+        for key in (
+            'request', 'bbox', 'query_layers', 'info_format',
+            'crs', 'srs', 'i', 'j', 'x', 'y', 'width', 'height',
+        ):
+            params.pop(key, None)
+
         params['service'] = 'WMS'
         params['version'] = params.get('version', '1.3.0')
         params['request'] = 'GetFeatureInfo'

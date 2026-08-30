@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 import uuid
 from defusedxml.ElementTree import fromstring as safe_fromstring, ParseError as SafeParseError
 
-from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse
+from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse, SyncBBoxRequest
 from app.domain.models import Layer, JobStatus
 from app.infrastructure.db.connection import db, get_async_session
 from app.infrastructure.db.repository import LayerRepository, ProjectRepository, UploadSessionRepository
@@ -114,7 +114,7 @@ async def list_layers(
             tile_url_template=layer.tile_url_template,
             status=status,
             created_at=layer.created_at,
-            bbox=[layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north] if all([layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]) else None,
+            bbox=[layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north] if all(v is not None for v in [layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]) else None,
             file_metadata=layer.file_metadata,
         ))
 
@@ -151,7 +151,7 @@ async def get_layer(
         tile_url_template=layer.tile_url_template,
         status=status,
         created_at=layer.created_at,
-        bbox=[layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north] if all([layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]) else None,
+        bbox=[layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north] if all(v is not None for v in [layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]) else None,
         file_metadata=layer.file_metadata,
     )
 
@@ -175,10 +175,11 @@ async def patch_layer(
 
     # Determine layer type (use request value or existing value)
     layer_type = req.layer_type or existing.layer_type
-    tile_url = req.tile_url_template or existing.tile_url_template
+    tile_url_update = req.tile_url_template if req.tile_url_template is not None else req.source_url
+    tile_url = tile_url_update or existing.tile_url_template
 
     # Fetch available layers untuk ESRI MapServer jika URL berubah
-    if layer_type == 'esri_mapserver' and req.tile_url_template:
+    if layer_type == 'esri_mapserver' and tile_url_update:
         layers_list = await asyncio.to_thread(_fetch_esri_mapserver_layers, tile_url)
         if layers_list:
             file_metadata['availableLayers'] = layers_list
@@ -188,7 +189,7 @@ async def patch_layer(
         file_metadata=file_metadata,
         filename=req.filename,
         layer_type=req.layer_type,
-        tile_url_template=req.tile_url_template,
+        tile_url_template=tile_url_update,
         abstract=req.abstract,
         topic_category=req.topic_category,
         language=req.language,
@@ -225,7 +226,7 @@ async def patch_layer(
         tile_url_template=updated.tile_url_template,
         status=status,
         created_at=updated.created_at,
-        bbox=[updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north] if all([updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north]) else None,
+        bbox=[updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north] if all(v is not None for v in [updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north]) else None,
         file_metadata=updated.file_metadata,
         abstract=updated.abstract,
         topic_category=updated.topic_category,
@@ -363,6 +364,7 @@ async def sync_layer_bbox(
     layer_id: str,
     repo: LayerRepository = Depends(_get_layer_repo),
     upload_repo: UploadSessionRepository = Depends(_get_session_repo),
+    req: Optional[SyncBBoxRequest] = None,
 ):
     from app.infrastructure.services.bbox_extractor import extract_bbox, extract_bbox_from_file, get_crs_from_file
     import os
@@ -379,7 +381,10 @@ async def sync_layer_bbox(
                       'esri_mapserver', 'esri_featureserver', 'esri_tileserver',
                       'esri_vectortileserver', 'esri_imageserver'}
 
-    if layer.layer_type in FILE_BASED_TYPES:
+    if req is not None:
+        bbox = tuple(req.bbox)
+
+    elif layer.layer_type in FILE_BASED_TYPES:
         if not layer.upload_session_id:
             raise HTTPException(status_code=422, detail="No source file: layer has no upload session")
         session = await upload_repo.get_by_id(layer.upload_session_id)
@@ -422,7 +427,7 @@ async def sync_layer_bbox(
     if crs_str:
         new_metadata['crs'] = crs_str
 
-    await repo.update(
+    updated = await repo.update(
         layer_id=layer_id,
         bbox_west=west,
         bbox_south=south,
@@ -430,6 +435,11 @@ async def sync_layer_bbox(
         bbox_north=north,
         file_metadata=new_metadata,
     )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Layer not found")
+
+    # Keep the CSW record spatial extent consistent with the layer row.
+    await asyncio.to_thread(sync_layer, updated)
 
     return {
         "message": "BBox synced",
@@ -584,19 +594,26 @@ async def add_external_layer(
 ):
     from app.infrastructure.services.bbox_extractor import extract_bbox
 
+    # The UI uses `params`; manual API clients commonly send `file_metadata`.
+    # Normalize both shapes before bbox extraction and persistence.
+    file_metadata = dict(req.file_metadata or {})
+    file_metadata.update(req.params or {})
+
     # Fetch bbox dari remote service (jika tidak override di request)
     bbox_result = None
     if req.bbox and len(req.bbox) == 4:
         bbox_result = tuple(req.bbox)
     else:
-        bbox_result = await asyncio.to_thread(extract_bbox, req.layer_type, req.source_url, req.params)
+        bbox_result = await asyncio.to_thread(
+            extract_bbox,
+            req.layer_type,
+            req.source_url,
+            file_metadata,
+        )
 
     filename_without_ext = Path(req.filename).stem
     base_code = slugify(filename_without_ext)
     unique_code = await generate_unique_code(base_code, repo.code_exists)
-
-    # Prepare file metadata
-    file_metadata = req.params or {}
 
     # Fetch available layers untuk ESRI MapServer
     if req.layer_type == 'esri_mapserver':
@@ -632,7 +649,7 @@ async def add_external_layer(
         status="done",
         created_at=created.created_at,
         bbox=[created.bbox_west, created.bbox_south, created.bbox_east, created.bbox_north]
-            if all([created.bbox_west, created.bbox_south, created.bbox_east, created.bbox_north])
+            if all(v is not None for v in [created.bbox_west, created.bbox_south, created.bbox_east, created.bbox_north])
             else None,
         file_metadata=created.file_metadata,
         abstract=created.abstract,

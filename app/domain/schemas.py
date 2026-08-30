@@ -1,4 +1,6 @@
-from pydantic import BaseModel, Field
+import math
+
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, Dict, Any, Literal
 from datetime import datetime
 
@@ -128,10 +130,31 @@ class PatchLayerRequest(BaseModel):
     filename: Optional[str] = None
     layer_type: Optional[str] = None
     tile_url_template: Optional[str] = None
+    source_url: Optional[str] = None
     refresh_bbox: bool = False
     abstract: Optional[str] = None
     topic_category: Optional[str] = None
     language: Optional[str] = None
+
+
+def _validate_wgs84_bbox(bbox: Optional[list[float]]) -> Optional[list[float]]:
+    if bbox is None:
+        return None
+    if len(bbox) != 4:
+        raise ValueError("bbox must contain exactly four values: west, south, east, north")
+
+    west, south, east, north = bbox
+    if not all(math.isfinite(value) for value in bbox):
+        raise ValueError("bbox values must be finite numbers")
+    if not (-180 <= west < east <= 180 and -90 <= south < north <= 90):
+        raise ValueError("bbox must be a non-degenerate WGS84 extent")
+    return bbox
+
+
+class SyncBBoxRequest(BaseModel):
+    bbox: list[float]
+
+    _validate_bbox = field_validator("bbox")(_validate_wgs84_bbox)
 
 
 class LayerStyleRequest(BaseModel):
@@ -156,7 +179,10 @@ class ExternalLayerRequest(BaseModel):
     filename: str
     source_url: str
     params: Optional[dict] = None
+    file_metadata: Optional[dict] = None
     bbox: Optional[list[float]] = None
+
+    _validate_bbox = field_validator("bbox")(_validate_wgs84_bbox)
 
 
 class FeatureQueryResponse(BaseModel):
