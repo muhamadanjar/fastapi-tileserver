@@ -148,6 +148,7 @@ class QueryLayerFeaturesUseCase:
         """Query WMS layer menggunakan GetFeatureInfo."""
         wms_url = layer.tile_url_template
         if not wms_url:
+            print("base url tidak ditemukan")
             return FeatureQueryResponse(type='vector', count=0, features=[])
 
         # Parse URL untuk handle existing params
@@ -174,6 +175,7 @@ class QueryLayerFeaturesUseCase:
             layer_name = params.get('layers')
 
         if not layer_name:
+            print("layer name tidak ditemukan")
             return FeatureQueryResponse(type='vector', count=0, features=[])
 
         # Build GetFeatureInfo request
