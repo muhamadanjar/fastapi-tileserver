@@ -135,6 +135,14 @@ class UploadSessionRepository:
             self.session.add(session_obj)
             await self.session.commit()
 
+    async def set_artifact_lease(self, upload_id: str, lease_id: Optional[str]) -> None:
+        session_obj = await self.get_by_id(upload_id)
+        if session_obj:
+            session_obj.artifact_lease_id = lease_id
+            session_obj.updated_at = datetime.utcnow()
+            self.session.add(session_obj)
+            await self.session.commit()
+
     async def delete(self, upload_id: str) -> bool:
         session_obj = await self.get_by_id(upload_id)
         if session_obj:

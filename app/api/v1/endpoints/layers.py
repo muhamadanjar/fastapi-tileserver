@@ -560,6 +560,8 @@ async def sync_layer_bbox(
 @router.post("/{layer_id}/retile")
 async def retile_layer(
     layer_id: str,
+    max_zoom: int = Query(..., ge=0, le=22, description="Maximum zoom level for regenerated tiles"),
+    authorization: Optional[str] = Header(default=None),
     repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
@@ -578,12 +580,44 @@ async def retile_layer(
     if not is_artifact and not Path(upload_session.final_path).exists():
         raise HTTPException(status_code=404, detail="Source file missing from disk")
 
-    output_format = "mvt" if layer.layer_type == "mvt" else "raster"
-    process_tiling_task.delay(
-        upload_session.id, layer.id,
-        layer.file_type, upload_session.final_path, output_format
-    )
-    return {"message": "Retiling queued", "upload_id": upload_session.id}
+    if layer.file_type not in ("vector", "raster"):
+        raise HTTPException(status_code=422, detail="Only SHP/vector and raster layers can be retiled")
+
+    temporary_lease_id = None
+    if is_artifact:
+        if not authorization:
+            raise HTTPException(status_code=401, detail="Authorization is required to retile an artifact source")
+        artifact_id = upload_session.final_path.removeprefix("artifact://")
+        client = None
+        try:
+            client = UploadArtifactClient()
+            grant_id = await asyncio.to_thread(client.create_user_grant, artifact_id, authorization)
+            lease = await asyncio.to_thread(
+                client.acquire_lease, artifact_id, grant_id, f"retile:{layer.id}:{uuid.uuid4()}",
+            )
+            temporary_lease_id = str(lease["lease_id"])
+            await session_repo.set_artifact_lease(upload_session.id, temporary_lease_id)
+        except Exception as exc:
+            if temporary_lease_id and client:
+                try:
+                    await asyncio.to_thread(client.release_lease, artifact_id, temporary_lease_id)
+                except Exception:
+                    pass
+            raise HTTPException(status_code=424, detail="Source artifact is unavailable for retile") from exc
+
+    output_format = upload_session.output_format or ("mvt" if layer.layer_type == "mvt" else "raster")
+    try:
+        task = process_tiling_task.delay(
+            upload_session.id, layer.id,
+            layer.file_type, upload_session.final_path, output_format, max_zoom
+        )
+    except Exception:
+        if temporary_lease_id:
+            await asyncio.to_thread(client.release_lease, artifact_id, temporary_lease_id)
+            await session_repo.set_artifact_lease(upload_session.id, None)
+        raise
+    await session_repo.start_tiling(upload_session.id, task.id, output_format, max_zoom)
+    return {"message": "Retiling queued", "upload_id": upload_session.id, "max_zoom": max_zoom}
 
 
 _DOWNLOADABLE_ESRI_TYPES = ("esri_mapserver", "esri_featureserver")
