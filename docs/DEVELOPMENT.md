@@ -370,21 +370,24 @@ independent. By default, database, RabbitMQ, Redis, and GeoServer are expected
 to be externally managed. Configure their endpoints with the `TILESERVER_*`
 variables documented in [Docker Compose Optional Infrastructure](features/docker-compose-optional-infrastructure.md).
 
+Docker Compose reads `.env.docker`, while local Python commands read `.env`.
+Create the Docker profile before starting Compose:
+
+```bash
+cp .env.docker.example .env.docker
+```
+
 To run development containers with external infrastructure:
 
 ```bash
 make docker-up-dev
 ```
 
-To provision the local infrastructure profile, point the application at the
-Compose service names and then start both profiles:
+To provision the local infrastructure profile, use the Compose service-name
+defaults in `.env.docker` and start both profiles:
 
 ```bash
-export TILESERVER_DB_HOST=postgres
-export TILESERVER_RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-export TILESERVER_REDIS_URL=redis://redis:6379/0
-export TILESERVER_GEOSERVER_URL=http://geoserver:8080/geoserver
-docker compose --profile infrastructure --profile development up --build
+docker compose --env-file .env.docker --profile infrastructure --profile development up --build
 ```
 
 For a production-target application image with external infrastructure:

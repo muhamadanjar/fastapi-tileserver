@@ -1,10 +1,15 @@
 
+import os
 from typing import List, Optional, Union
 from functools import lru_cache
 from pydantic import AnyHttpUrl, field_validator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 from app.config.database import DatabaseSettings
+
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+ENV_FILE = Path(os.getenv("TILESERVER_ENV_FILE", BASE_DIR / ".env"))
 
 
 class Settings(BaseSettings):
@@ -25,7 +30,7 @@ class Settings(BaseSettings):
     )
 
     # Upload and Data Directories
-    BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
+    BASE_DIR: Path = BASE_DIR
     UPLOAD_DIR: Path = BASE_DIR / "data" / "uploads"
     TILES_DIR: Path = BASE_DIR / "data" / "tiles"
     CHUNKS_DIR: Path = BASE_DIR / "data" / "chunks"
@@ -45,6 +50,7 @@ class Settings(BaseSettings):
 
     # GeoServer
     GEOSERVER_URL: str = Field(default="http://localhost:8080/geoserver", env="GEOSERVER_URL")
+    GEOSERVER_WMS_URL: str = Field(default="", env="GEOSERVER_WMS_URL")
     GEOSERVER_USER: str = Field(default="admin", env="GEOSERVER_USER")
     GEOSERVER_PASSWORD: str = Field(default="geoserver", env="GEOSERVER_PASSWORD")
     GEOSERVER_WORKSPACE: str = Field(default="tileserver", env="GEOSERVER_WORKSPACE")
@@ -103,7 +109,7 @@ class Settings(BaseSettings):
         return [item.strip() for item in self.ACCESS_TOKEN_ALGORITHMS.split(",") if item.strip()]
 
     model_config = SettingsConfigDict(
-        env_file=str(BASE_DIR / ".env"),
+        env_file=str(ENV_FILE),
         extra="allow",
         env_file_encoding="utf-8",
         env_nested_delimiter="__",
@@ -118,7 +124,7 @@ settings = get_settings()
 # Make .env visible to raw os.getenv() consumers (e.g. UploadArtifactClient),
 # not just pydantic Settings. Real environment variables still win.
 from dotenv import load_dotenv as _load_dotenv
-_load_dotenv(settings.BASE_DIR / ".env")
+_load_dotenv(ENV_FILE)
 
 # Ensure directories exist
 settings.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)

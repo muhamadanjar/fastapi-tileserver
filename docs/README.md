@@ -59,6 +59,9 @@ Keep it only in the deployment secret store or runtime environment. Use a unique
 **...set up locally**
 → [Setup: Initial Setup](SETUP.md#initial-setup)
 
+**...keep Docker and local configuration separate**
+→ [Environment Configuration Profiles](features/environment-configuration-profiles.md)
+
 **...understand the system**
 → [Overview](OVERVIEW.md) + [Architecture](ARCHITECTURE.md)
 

@@ -4,11 +4,12 @@ import shutil
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 import uuid
 from defusedxml.ElementTree import fromstring as safe_fromstring, ParseError as SafeParseError
 
-from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse, SyncBBoxRequest
+from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse, LayerLegendResponse, SyncBBoxRequest
 from app.domain.models import Layer, JobStatus
 from app.infrastructure.db.connection import db, get_async_session
 from app.infrastructure.db.repository import LayerRepository, ProjectRepository, UploadSessionRepository
@@ -20,7 +21,7 @@ from app.core.style_utils import merge_style_state
 from app.core.response import APIResponse
 from app.core.config import settings
 from app.workers.tasks import process_tiling_task, download_esri_layer_task
-from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError
+from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError, LayerSourceUnavailableError
 from app.usecases.getinfo_layer import QueryLayerFeaturesUseCase
 from app.usecases.get_layer_fields import GetLayerFieldsUseCase
 from app.usecases.get_field_unique_values import GetFieldUniqueValuesUseCase
@@ -62,12 +63,104 @@ def _fetch_esri_mapserver_layers(url: str) -> Optional[list]:
     return None
 
 
+def _fetch_wms_layers(url: str) -> Optional[list]:
+    """Discover named WMS layers in a GetCapabilities document."""
+    import requests
+
+    if not url:
+        return None
+    try:
+        parsed = urlsplit(url)
+        params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        params.update({"service": "WMS", "request": "GetCapabilities"})
+        capabilities_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+        response = requests.get(capabilities_url, params=params, timeout=10)
+        if response.status_code != 200:
+            return None
+        root = safe_fromstring(response.content)
+        layers = []
+        seen = set()
+        for element in root.iter():
+            if element.tag.rsplit("}", 1)[-1] != "Layer":
+                continue
+            children = {child.tag.rsplit("}", 1)[-1]: (child.text or "").strip() for child in element}
+            name = children.get("Name")
+            if name and name not in seen:
+                seen.add(name)
+                layers.append({"id": name, "name": children.get("Title") or name})
+        return layers or None
+    except (requests.RequestException, SafeParseError, ValueError):
+        return None
+
+
 def _get_layer_repo(session=Depends(get_async_session)) -> LayerRepository:
     return LayerRepository(session)
 
 
 def _get_session_repo(session=Depends(get_async_session)) -> UploadSessionRepository:
     return UploadSessionRepository(session)
+
+
+_ESRI_LEGEND_TYPES = {"esri_mapserver", "esri_imageserver"}
+
+
+def _legend_response(layer: Layer) -> LayerLegendResponse:
+    """Return the upstream-native legend location for a layer when available."""
+    metadata = layer.file_metadata or {}
+
+    if layer.layer_type == "wms":
+        layer_name = (metadata.get("geoserver") or {}).get("layer_name")
+        layer_name = layer_name or metadata.get("layers") or metadata.get("layer")
+        if not layer_name:
+            return LayerLegendResponse(
+                layer_id=layer.id,
+                layer_type=layer.layer_type,
+                available=False,
+                detail="WMS layer name is not configured",
+            )
+        parts = urlsplit(layer.tile_url_template)
+        query = dict(parse_qsl(parts.query, keep_blank_values=True))
+        query.update({
+            "service": "WMS",
+            "request": "GetLegendGraphic",
+            "version": "1.3.0",
+            "layer": layer_name,
+            "format": "image/png",
+        })
+        return LayerLegendResponse(
+            layer_id=layer.id,
+            layer_type=layer.layer_type,
+            available=True,
+            legend_url=urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), "")),
+            format="image/png",
+        )
+
+    if layer.layer_type in _ESRI_LEGEND_TYPES:
+        parts = urlsplit(layer.tile_url_template.rstrip("/"))
+        service_name = "MapServer" if layer.layer_type == "esri_mapserver" else "ImageServer"
+        marker = f"/{service_name}"
+        service_path, separator, _ = parts.path.partition(marker)
+        if not parts.scheme or not parts.netloc or not separator:
+            return LayerLegendResponse(
+                layer_id=layer.id,
+                layer_type=layer.layer_type,
+                available=False,
+                detail=f"Layer does not point to an Esri {service_name} service",
+            )
+        return LayerLegendResponse(
+            layer_id=layer.id,
+            layer_type=layer.layer_type,
+            available=True,
+            legend_url=urlunsplit((parts.scheme, parts.netloc, f"{service_path}{marker}/legend", "f=pjson", "")),
+            format="application/json",
+        )
+
+    return LayerLegendResponse(
+        layer_id=layer.id,
+        layer_type=layer.layer_type,
+        available=False,
+        detail=f"Layer type '{layer.layer_type}' does not expose a server-side legend",
+    )
 
 
 @router.get("")
@@ -125,6 +218,17 @@ async def list_layers(
     )
 
 
+@router.get("/{layer_id}/legend", response_model=LayerLegendResponse)
+async def get_layer_legend(
+    layer_id: str,
+    repo: LayerRepository = Depends(_get_layer_repo),
+):
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+    return _legend_response(layer)
+
+
 @router.get("/{layer_id}", response_model=LayerResponse)
 async def get_layer(
     layer_id: str,
@@ -178,9 +282,13 @@ async def patch_layer(
     tile_url_update = req.tile_url_template if req.tile_url_template is not None else req.source_url
     tile_url = tile_url_update or existing.tile_url_template
 
-    # Fetch available layers untuk ESRI MapServer jika URL berubah
+    # Fetch available sublayers untuk services that expose them.
     if layer_type == 'esri_mapserver' and tile_url_update:
         layers_list = await asyncio.to_thread(_fetch_esri_mapserver_layers, tile_url)
+        if layers_list:
+            file_metadata['availableLayers'] = layers_list
+    elif layer_type == 'wms' and tile_url:
+        layers_list = await asyncio.to_thread(_fetch_wms_layers, tile_url)
         if layers_list:
             file_metadata['availableLayers'] = layers_list
 
@@ -615,9 +723,13 @@ async def add_external_layer(
     base_code = slugify(filename_without_ext)
     unique_code = await generate_unique_code(base_code, repo.code_exists)
 
-    # Fetch available layers untuk ESRI MapServer
+    # Fetch available sublayers for the selected external service.
     if req.layer_type == 'esri_mapserver':
         layers_list = await asyncio.to_thread(_fetch_esri_mapserver_layers, req.source_url)
+        if layers_list:
+            file_metadata['availableLayers'] = layers_list
+    elif req.layer_type == 'wms':
+        layers_list = await asyncio.to_thread(_fetch_wms_layers, req.source_url)
         if layers_list:
             file_metadata['availableLayers'] = layers_list
 
@@ -811,14 +923,23 @@ async def delete_layer(
 async def get_layer_fields(
     layer_id: str,
     layerIndex: int = Query(None),
+    layerName: Optional[str] = Query(default=None),
+    authorization: Optional[str] = Header(default=None),
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
     usecase = GetLayerFieldsUseCase(layer_repo, session_repo)
     try:
-        return await usecase.execute(layer_id, layer_index=layerIndex)
+        return await usecase.execute(
+            layer_id,
+            layer_index=layerIndex,
+            layer_name=layerName,
+            authorization=authorization,
+        )
     except (LayerNotFoundError, LayerFieldsUnavailableError) as exc:
         raise HTTPException(status_code=404, detail=exc.message)
+    except LayerSourceUnavailableError as exc:
+        raise HTTPException(status_code=424, detail=exc.message)
 
 
 @router.get("/{layer_id}/fields/{field_name}/values", response_model=FieldUniqueValuesResponse)
@@ -858,11 +979,15 @@ async def query_features(
     layer_id: str,
     lon: float,
     lat: float,
+    authorization: Optional[str] = Header(default=None),
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
     usecase = QueryLayerFeaturesUseCase(layer_repo, session_repo)
-    return await usecase.execute(layer_id, lon, lat)
+    try:
+        return await usecase.execute(layer_id, lon, lat, authorization=authorization)
+    except LayerSourceUnavailableError as exc:
+        raise HTTPException(status_code=424, detail=exc.message)
 
 
 @router.post("/{layer_id}/mbtiles")

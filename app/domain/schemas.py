@@ -169,6 +169,15 @@ class LayerStyleResponse(BaseModel):
     style: Optional[dict] = None      # stored editor state incl. mode, None if never styled
 
 
+class LayerLegendResponse(BaseModel):
+    layer_id: str
+    layer_type: str
+    available: bool
+    legend_url: Optional[str] = None
+    format: Optional[str] = None
+    detail: Optional[str] = None
+
+
 class LayerFieldsResponse(BaseModel):
     layer_id: str
     fields: list[str]
@@ -190,6 +199,9 @@ class FeatureQueryResponse(BaseModel):
     count: int
     features: Optional[list[dict]] = None
     values: Optional[dict[str, float]] = None
+    # "client" when the layer is rendered client-side (mvt/geojson/kml/esri_*) and
+    # the frontend should query the already-loaded features instead of a backend query.
+    query_hint: Optional[str] = None
 
 
 class FieldUniqueValuesResponse(BaseModel):
@@ -203,6 +215,8 @@ class BboxFeaturesResponse(BaseModel):
     count: int
     exceeded: bool
     features: list[dict[str, Any]]
+    queryable: bool = True
+    reason: Optional[str] = None
 
 
 # --- Esri Discovery ---

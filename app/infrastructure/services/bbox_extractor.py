@@ -84,6 +84,10 @@ def extract_bbox(layer_type: str, source_url: str, params: Optional[dict] = None
 			bbox = _extract_wms_bbox(source_url, params)
 		elif layer_type == "wmts":
 			bbox = _extract_wmts_bbox(source_url, params)
+		elif layer_type == "wfs":
+			bbox = _extract_wfs_bbox(source_url, params)
+		elif layer_type in ("geojson", "kml"):
+			bbox = _extract_remote_vector_bbox(source_url)
 		elif layer_type in ("esri_mapserver", "esri_featureserver", "esri_imageserver", "esri_tileserver", "esri_vectortileserver"):
 			bbox = _extract_esri_bbox(source_url, params)
 		else:
@@ -166,6 +170,45 @@ def _extract_wmts_bbox(source_url: str, params: Optional[dict] = None) -> Option
 	except Exception as e:
 		logger.debug(f"WMTS bbox extraction failed: {e}")
 		return None
+
+
+def _extract_wfs_bbox(source_url: str, params: Optional[dict] = None) -> Optional[BBox]:
+	"""Extract a WGS84 extent from WFS GetCapabilities."""
+	try:
+		if not _validate_url_safety(source_url):
+			return None
+		from owslib.wfs import WebFeatureService
+		wfs = WebFeatureService(source_url, timeout=_FETCH_TIMEOUT)
+		layer_name = (params or {}).get("typeName") or (params or {}).get("typename") or (params or {}).get("layers")
+		if layer_name and layer_name in wfs.contents:
+			bbox = wfs.contents[layer_name].boundingBoxWGS84
+			if bbox:
+				return tuple(float(value) for value in bbox)
+		all_bboxes = [item.boundingBoxWGS84 for item in wfs.contents.values() if item.boundingBoxWGS84]
+		if all_bboxes:
+			return (
+				min(b[0] for b in all_bboxes), min(b[1] for b in all_bboxes),
+				max(b[2] for b in all_bboxes), max(b[3] for b in all_bboxes),
+			)
+	except Exception as exc:
+		logger.debug(f"WFS bbox extraction failed: {exc}")
+	return None
+
+
+def _extract_remote_vector_bbox(source_url: str) -> Optional[BBox]:
+	"""Read a public GeoJSON/KML URL through GeoPandas after SSRF validation."""
+	try:
+		if not _validate_url_safety(source_url):
+			return None
+		import geopandas as gpd
+		gdf = gpd.read_file(source_url)
+		if gdf.crs is None:
+			gdf = gdf.set_crs("EPSG:4326")
+		bounds = gdf.to_crs("EPSG:4326").total_bounds
+		return tuple(float(value) for value in bounds)
+	except Exception as exc:
+		logger.debug(f"Remote vector bbox extraction failed: {exc}")
+	return None
 
 
 def _extract_esri_bbox(source_url: str, params: Optional[dict] = None) -> Optional[BBox]:

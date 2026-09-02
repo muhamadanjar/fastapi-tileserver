@@ -219,6 +219,7 @@ def publish_geoserver_task(self, upload_id: str, layer_id: str, code: str):
             username=settings.GEOSERVER_USER,
             password=settings.GEOSERVER_PASSWORD,
             workspace=settings.GEOSERVER_WORKSPACE,
+            wms_url=settings.GEOSERVER_WMS_URL,
         )
         source_ctx = (
             UploadArtifactClient().materialize(artifact_id, filename or "artifact.bin")

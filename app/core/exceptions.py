@@ -57,6 +57,13 @@ class LayerFieldsUnavailableError(TileServerException):
         super().__init__(self.message)
 
 
+class LayerSourceUnavailableError(TileServerException):
+    """The layer source exists in metadata but cannot be materialized."""
+    def __init__(self, detail: str = "Source layer tidak dapat diakses."):
+        self.message = detail
+        super().__init__(self.message)
+
+
 class EsriDownloadError(Exception):
     """Raised when the remote Esri service cannot be downloaded."""
     pass

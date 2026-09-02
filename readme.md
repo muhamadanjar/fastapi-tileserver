@@ -44,9 +44,16 @@ production. PostgreSQL/PostGIS, RabbitMQ, Redis, and GeoServer are optional:
 they are only created when the `infrastructure` profile is explicitly enabled.
 This lets the API and Celery worker use managed or otherwise external services.
 
+Docker uses its own configuration file. Create it once; this does not alter the
+`.env` used by local Python commands:
+
+```bash
+cp .env.docker.example .env.docker
+```
+
 ### Development with external infrastructure
 
-Configure the external endpoints with `TILESERVER_*` variables when needed,
+Configure the external endpoints in `.env.docker` with `TILESERVER_*` variables,
 then start the development API and worker. Source files are mounted into the
 containers and Uvicorn reload is enabled.
 
@@ -56,15 +63,11 @@ make docker-up-dev
 
 ### Development with local infrastructure
 
-Set the application endpoints to the Compose service names, then start the two
-profiles together:
+The default `.env.docker.example` already points at Compose service names. Then
+start the two profiles together:
 
 ```bash
-export TILESERVER_DB_HOST=postgres
-export TILESERVER_RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-export TILESERVER_REDIS_URL=redis://redis:6379/0
-export TILESERVER_GEOSERVER_URL=http://geoserver:8080/geoserver
-docker compose --profile infrastructure --profile development up --build
+docker compose --env-file .env.docker --profile infrastructure --profile development up --build
 ```
 
 ### Production target

@@ -12,11 +12,19 @@ infrastructure profile:
 - `infrastructure` starts PostGIS, RabbitMQ, Redis, and GeoServer. It is never
   implicitly started by either application profile.
 
+Docker Compose reads `.env.docker`; local Python commands continue to read
+`.env`. The development container also ignores the source-mounted `.env`.
+Create the Docker profile with:
+
+```bash
+cp .env.docker.example .env.docker
+```
+
 ## External infrastructure
 
 Use this when database, broker, cache, or GeoServer is already managed outside
-Docker. Set the relevant `TILESERVER_*` values and start only an application
-profile:
+Docker. Set the relevant `TILESERVER_*` values in `.env.docker` and start only
+an application profile:
 
 ```bash
 make docker-up-dev
@@ -28,23 +36,21 @@ The defaults point to `host.docker.internal`, which is mapped to the Docker
 host. Override them for any remote service, for example:
 
 ```bash
-export TILESERVER_DB_HOST=db.example.internal
-export TILESERVER_RABBITMQ_URL=amqp://user:password@rabbit.example.internal:5672/vhost
-make docker-up-prod
+# In .env.docker
+TILESERVER_DB_HOST=db.example.internal
+TILESERVER_RABBITMQ_URL=amqp://user:password@rabbit.example.internal:5672/vhost
 ```
+
+Then run `make docker-up-prod`.
 
 ## Local infrastructure
 
-To use the optional containers, application URLs must address Compose service
-names rather than the host. Export the values once for the current shell, then
-start both profiles:
+To use the optional containers, set the Docker profile's application URLs to
+Compose service names (the template already does this), then start both
+profiles:
 
 ```bash
-export TILESERVER_DB_HOST=postgres
-export TILESERVER_RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
-export TILESERVER_REDIS_URL=redis://redis:6379/0
-export TILESERVER_GEOSERVER_URL=http://geoserver:8080/geoserver
-docker compose --profile infrastructure --profile development up --build
+docker compose --env-file .env.docker --profile infrastructure --profile development up --build
 ```
 
 For the production Dockerfile target, replace `development` with `production`.

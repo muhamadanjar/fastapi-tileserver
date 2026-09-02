@@ -1,6 +1,7 @@
 name: tileserver
 
 x-app-environment: &app-environment
+  TILESERVER_ENV_FILE: /app/.env.docker
   DB_TYPE: ${TILESERVER_DB_TYPE:-postgresql}
   DB_HOST: ${TILESERVER_DB_HOST:-host.docker.internal}
   DB_PORT: ${TILESERVER_DB_PORT:-5432}
@@ -13,7 +14,7 @@ x-app-environment: &app-environment
 
 x-app-service: &app-service
   env_file:
-    - .env
+    - ${TILESERVER_DOCKER_ENV_FILE:-.env.docker}
   environment: *app-environment
   extra_hosts:
     - host.docker.internal:host-gateway
@@ -35,6 +36,9 @@ services:
       - ./:/app
       - tileserver-dev-data:/app/data
       - tileserver-dev-logs:/app/logs
+      # Compatibility for artifacts created by the host-run upload_api before
+      # it was containerised. Read-only: tileserver must never mutate upload data.
+      - ${UPLOAD_API_STORAGE_PATH:-../upload_api/storage}:/app/data/upload-artifacts:ro
 
   tileserver-worker-dev:
     <<: *app-service
@@ -48,6 +52,7 @@ services:
       - ./:/app
       - tileserver-dev-data:/app/data
       - tileserver-dev-logs:/app/logs
+      - ${UPLOAD_API_STORAGE_PATH:-../upload_api/storage}:/app/data/upload-artifacts:ro
 
   tileserver:
     <<: *app-service

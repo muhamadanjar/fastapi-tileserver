@@ -375,6 +375,42 @@ Ambil style tersimpan (editor state) untuk layer WMS yang dipublish ke GeoServer
 
 ---
 
+### GET `/layers/{layer_id}/legend`
+
+Mengembalikan lokasi legenda native dari layer. Endpoint ini menyatukan format
+URL legenda per tipe layer: WMS menghasilkan URL `GetLegendGraphic` PNG;
+`esri_mapserver` dan `esri_imageserver` menghasilkan endpoint ArcGIS REST
+`legend?f=pjson`. Tipe lokal serta `esri_featureserver`, `esri_tileserver`, dan
+`esri_vectortileserver` tidak memiliki endpoint legenda standar, sehingga tetap
+merespons `200` dengan `available: false`.
+
+**Response (WMS, 200):**
+```json
+{
+  "layer_id": "layer-xyz",
+  "layer_type": "wms",
+  "available": true,
+  "legend_url": "https://maps.example/geoserver/wms?service=WMS&request=GetLegendGraphic&version=1.3.0&layer=workspace%3Aroads&format=image%2Fpng",
+  "format": "image/png"
+}
+```
+
+**Response (tipe tanpa legenda, 200):**
+```json
+{
+  "layer_id": "layer-xyz",
+  "layer_type": "mvt",
+  "available": false,
+  "legend_url": null,
+  "detail": "Layer type 'mvt' does not expose a server-side legend"
+}
+```
+
+**Error Responses:**
+- `404 Not Found` — layer tidak ditemukan
+
+---
+
 ### PUT `/layers/{layer_id}/style`
 
 Set style layer WMS GeoServer — dua mode: `simple` (JSON geometry-keyed, backend generate SLD 1.0.0) atau `sld` (raw SLD XML). Style disimpan di GeoServer sebagai `layer_{layer_id}` dan diset sebagai default style layer tersebut. Lihat `docs/STYLE_EDITING.md` untuk skema lengkap dan aturan editor-state vs rendering-truth.

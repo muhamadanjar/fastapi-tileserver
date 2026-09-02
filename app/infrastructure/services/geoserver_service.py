@@ -22,10 +22,11 @@ class GeoServerStyleError(Exception):
 
 
 class GeoServerService:
-    def __init__(self, url: str, username: str, password: str, workspace: str):
+    def __init__(self, url: str, username: str, password: str, workspace: str, wms_url: str = ""):
         self.geo = Geoserver(url, username=username, password=password)
         self.workspace = workspace
         self._base_url = url.rstrip("/")
+        self._wms_base_url = wms_url.rstrip("/") if wms_url else self._base_url
         self._auth = (username, password)
 
     def publish_shp(self, final_path: str, store_name: str) -> dict:
@@ -52,8 +53,8 @@ class GeoServerService:
         bbox = self._recalculate_bbox(store_name)
 
         layer_name = f"{self.workspace}:{store_name}"
-        wms_url = f"{self._base_url}/{self.workspace}/wms"
-        wfs_url = f"{self._base_url}/{self.workspace}/wfs"
+        wms_url = f"{self._wms_base_url}/{self.workspace}/wms"
+        wfs_url = f"{self._wms_base_url}/{self.workspace}/wfs"
 
         return {
             "layer_name": layer_name,
