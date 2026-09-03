@@ -26,6 +26,7 @@ from app.usecases.getinfo_layer import QueryLayerFeaturesUseCase
 from app.usecases.get_layer_fields import GetLayerFieldsUseCase
 from app.usecases.get_field_unique_values import GetFieldUniqueValuesUseCase
 from app.usecases.get_features_in_bbox import GetFeaturesInBboxUseCase
+from app.usecases.artifact_source import artifact_source_context
 from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
 
 router = APIRouter(prefix="/layers", tags=["layers"])
@@ -473,6 +474,7 @@ async def sync_layer_bbox(
     repo: LayerRepository = Depends(_get_layer_repo),
     upload_repo: UploadSessionRepository = Depends(_get_session_repo),
     req: Optional[SyncBBoxRequest] = None,
+    authorization: Optional[str] = Header(default=None),
 ):
     from app.infrastructure.services.bbox_extractor import extract_bbox, extract_bbox_from_file, get_crs_from_file
     import os
@@ -498,24 +500,22 @@ async def sync_layer_bbox(
         session = await upload_repo.get_by_id(layer.upload_session_id)
         if not session or not session.final_path:
             raise HTTPException(status_code=422, detail="Source file path not found in upload session")
-        # Artifact handoff (upload-api): final_path="artifact://<id>", materiakan dulu seperti di tasks.py.
-        artifact_id = (
-            session.final_path.removeprefix("artifact://")
-            if session.final_path.startswith("artifact://")
-            else None
-        )
-        if artifact_id is None and not os.path.exists(session.final_path):
-            raise HTTPException(status_code=422, detail="Source file no longer exists on disk")
-        source_ctx = (
-            UploadArtifactClient().materialize(artifact_id, session.filename)
-            if artifact_id
-            else nullcontext(session.final_path)
-        )
         try:
-            with source_ctx as source_path:
+            async with artifact_source_context(
+                session.final_path,
+                session.filename,
+                authorization,
+                f"sync-bbox:{layer.id}",
+            ) as source_path:
+                if not source_path:
+                    raise HTTPException(status_code=422, detail="Source file no longer exists on disk")
                 bbox = await asyncio.to_thread(extract_bbox_from_file, source_path)
                 if bbox:
                     crs_str = await asyncio.to_thread(get_crs_from_file, source_path)
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc))
+        except HTTPException:
+            raise
         except Exception as exc:
             # Lease artifact bisa sudah dilepas setelah tiling; beri pesan yang jujur, bukan 500.
             raise HTTPException(status_code=422, detail=f"Source file unavailable: {exc}")
@@ -980,12 +980,15 @@ async def get_layer_fields(
 async def get_field_unique_values(
     layer_id: str,
     field_name: str,
+    authorization: Optional[str] = Header(default=None),
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
     usecase = GetFieldUniqueValuesUseCase(layer_repo, session_repo)
     try:
-        return await usecase.execute(layer_id, field_name)
+        return await usecase.execute(layer_id, field_name, authorization=authorization)
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
     except (LayerNotFoundError, LayerFieldsUnavailableError) as exc:
         raise HTTPException(status_code=404, detail=exc.message)
 
@@ -998,12 +1001,17 @@ async def get_features_in_bbox(
     east: float = Query(...),
     north: float = Query(...),
     limit: int = Query(default=200, le=500),
+    authorization: Optional[str] = Header(default=None),
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
     usecase = GetFeaturesInBboxUseCase(layer_repo, session_repo)
     try:
-        return await usecase.execute(layer_id, west, south, east, north, limit)
+        return await usecase.execute(
+            layer_id, west, south, east, north, limit, authorization=authorization,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
     except (LayerNotFoundError, LayerFieldsUnavailableError) as exc:
         raise HTTPException(status_code=404, detail=exc.message)
 

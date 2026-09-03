@@ -10,7 +10,7 @@ import requests
 from app.core.exceptions import LayerNotFoundError
 from app.domain.schemas import BboxFeaturesResponse
 from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
-from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
+from app.usecases.artifact_source import artifact_source_context
 
 
 class GetFeaturesInBboxUseCase:
@@ -26,12 +26,13 @@ class GetFeaturesInBboxUseCase:
         east: float,
         north: float,
         limit: int = 200,
+        authorization: Optional[str] = None,
     ) -> BboxFeaturesResponse:
         layer = await self.layer_repo.get_by_id(layer_id)
         if not layer:
             raise LayerNotFoundError(layer_id)
 
-        source_path = await self._get_source_path(layer)
+        session = await self.session_repo.get_by_id(layer.upload_session_id) if layer.upload_session_id else None
         visible_fields: Optional[list[str]] = None
         if layer.file_metadata and isinstance(layer.file_metadata, dict):
             fields_cfg = layer.file_metadata.get('fields')
@@ -41,41 +42,47 @@ class GetFeaturesInBboxUseCase:
                     if isinstance(f, dict) and f.get('visible', True) and 'original' in f
                 ]
 
-        if source_path and layer.file_type == 'vector':
-            features, exceeded = await asyncio.to_thread(
-                self._read_features_in_bbox,
-                source_path,
-                west,
-                south,
-                east,
-                north,
-                limit,
-                visible_fields,
-            )
-        elif layer.layer_type == 'wfs':
-            features, exceeded = await asyncio.to_thread(
-                self._query_wfs,
-                layer,
-                west,
-                south,
-                east,
-                north,
-                limit,
-                visible_fields,
-            )
-        elif layer.layer_type in {'esri_featureserver', 'esri_mapserver'}:
-            features, exceeded = await asyncio.to_thread(
-                self._query_esri_service,
-                layer,
-                west,
-                south,
-                east,
-                north,
-                limit,
-                visible_fields,
-            )
-        else:
-            return self._not_queryable(layer, source_path)
+        async with artifact_source_context(
+            session.final_path if session else None,
+            session.filename if session else None,
+            authorization,
+            f"bbox-features:{layer.id}",
+        ) as source_path:
+            if source_path and layer.file_type == 'vector':
+                features, exceeded = await asyncio.to_thread(
+                    self._read_features_in_bbox,
+                    source_path,
+                    west,
+                    south,
+                    east,
+                    north,
+                    limit,
+                    visible_fields,
+                )
+            elif layer.layer_type == 'wfs':
+                features, exceeded = await asyncio.to_thread(
+                    self._query_wfs,
+                    layer,
+                    west,
+                    south,
+                    east,
+                    north,
+                    limit,
+                    visible_fields,
+                )
+            elif layer.layer_type in {'esri_featureserver', 'esri_mapserver'}:
+                features, exceeded = await asyncio.to_thread(
+                    self._query_esri_service,
+                    layer,
+                    west,
+                    south,
+                    east,
+                    north,
+                    limit,
+                    visible_fields,
+                )
+            else:
+                return self._not_queryable(layer, source_path)
 
         return BboxFeaturesResponse(
             layer_id=layer_id,
@@ -104,44 +111,6 @@ class GetFeaturesInBboxUseCase:
             queryable=False,
             reason=reason,
         )
-
-    async def _get_source_path(self, layer) -> Optional[Path]:
-        if not layer.upload_session_id:
-            return None
-        session = await self.session_repo.get_by_id(layer.upload_session_id)
-        if not session or not session.final_path:
-            return None
-        final_path = session.final_path
-        if final_path.startswith("artifact://"):
-            artifact_id = final_path.removeprefix("artifact://")
-            cache_dir = Path(os.getenv("ARTIFACT_CACHE_DIR", "/app/data/artifacts"))
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            destination = cache_dir / f"{artifact_id}{Path(session.filename or 'source').suffix}"
-            if not destination.exists():
-                try:
-                    with UploadArtifactClient().materialize(artifact_id, session.filename or "artifact.bin") as source:
-                        destination.write_bytes(source.read_bytes())
-                except Exception:
-                    legacy = self._legacy_artifact_path(session.id, session.filename)
-                    if not legacy:
-                        raise
-                    return legacy
-            return destination
-        path = Path(final_path)
-        return path if path.exists() else None
-
-    @staticmethod
-    def _legacy_artifact_path(session_id: str, filename: Optional[str]) -> Optional[Path]:
-        if not session_id or not filename:
-            return None
-        root = Path(os.getenv("LEGACY_ARTIFACT_DIR", "/app/data/upload-artifacts"))
-        for candidate in (
-            root / "objects" / "uploads" / session_id / Path(filename).name,
-            root / "uploads" / session_id / Path(filename).name,
-        ):
-            if candidate.is_file():
-                return candidate
-        return None
 
     @staticmethod
     def _read_features_in_bbox(
