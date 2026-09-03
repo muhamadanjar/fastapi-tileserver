@@ -365,18 +365,36 @@ def publish_kml(self, file_path, store_name):
 
 ### Deploy to Docker
 
-1. Create `Dockerfile`:
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-COPY app/ app/
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+The Compose configuration keeps the application and its infrastructure
+independent. By default, database, RabbitMQ, Redis, and GeoServer are expected
+to be externally managed. Configure their endpoints with the `TILESERVER_*`
+variables documented in [Docker Compose Optional Infrastructure](features/docker-compose-optional-infrastructure.md).
+
+Docker Compose reads `.env.docker`, while local Python commands read `.env`.
+Create the Docker profile before starting Compose:
+
+```bash
+cp .env.docker.example .env.docker
 ```
 
-2. Create `docker-compose.yml` with FastAPI + Celery + RabbitMQ + PostgreSQL
-3. `docker-compose up`
+To run development containers with external infrastructure:
+
+```bash
+make docker-up-dev
+```
+
+To provision the local infrastructure profile, use the Compose service-name
+defaults in `.env.docker` and start both profiles:
+
+```bash
+docker compose --env-file .env.docker --profile infrastructure --profile development up --build
+```
+
+For a production-target application image with external infrastructure:
+
+```bash
+make docker-up-prod
+```
 
 ### Scale Celery Workers
 

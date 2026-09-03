@@ -88,3 +88,19 @@ def test_revoked_token_fails_upload_call():
     mock_put.assert_called_once()
     headers = mock_put.call_args.kwargs["headers"]
     assert headers == {"Authorization": "Bearer revoked"}
+
+
+def test_user_grant_forwards_the_editor_authorization():
+    from unittest.mock import MagicMock
+
+    from app.infrastructure.services import upload_artifact_client
+
+    with patch.dict("os.environ", OAUTH_ENV, clear=False), patch(
+        "app.infrastructure.services.upload_artifact_client.SyncOAuthServiceClient"
+    ), patch.object(upload_artifact_client.requests, "post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=201, text="", json=lambda: {"grant_id": "grant-1"})
+        caller = UploadArtifactClient()
+        assert caller.create_user_grant("artifact-1", "Bearer editor-token") == "grant-1"
+
+    assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer editor-token"
+    assert mock_post.call_args.kwargs["json"] == {"consumer": "tileserver-api"}

@@ -40,14 +40,6 @@ jobs:
           TAG="$(git tag --points-at HEAD --list '[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1)"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout shared service-auth library
-        if: steps.release_tag.outputs.tag != ''
-        uses: actions/checkout@v4
-        with:
-          repository: muhamadanjar/service_auth
-          path: libs/service_auth
-          token: ${{ secrets.SERVICE_AUTH_TOKEN || github.token }}
-
       - name: Set up Docker Buildx
         if: steps.release_tag.outputs.tag != ''
         uses: docker/setup-buildx-action@v3
@@ -64,8 +56,9 @@ jobs:
         if: steps.release_tag.outputs.tag != ''
         uses: docker/build-push-action@v6
         with:
-          context: ${{ github.workspace }}
+          context: ${{ github.workspace }}/services/tileserver_api
           file: ${{ github.workspace }}/services/tileserver_api/docker/Dockerfile
+          target: production
           push: true
           build-args: VERSION=${{ steps.release_tag.outputs.tag }}
           tags: |

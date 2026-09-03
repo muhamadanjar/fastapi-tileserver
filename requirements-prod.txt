@@ -1,0 +1,3 @@
+# Production profile: install the public shared auth client from its pinned Git revision.
+-r requirements.txt
+base-project-service-auth @ git+https://github.com/muhamadanjar/service_auth.git@f514e99ff224fed80b22b5c54385c4c59f8bc83b

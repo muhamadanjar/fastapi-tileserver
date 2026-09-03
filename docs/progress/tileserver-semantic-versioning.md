@@ -10,3 +10,4 @@ Related Plan: [Tileserver Semantic Versioning Plan](../plans/tileserver-semantic
 - [x] Document version management in the service README.
 - [x] Replace manual version and release workflow with semantic-release automation.
 - [x] Build and publish each new semantic release image to GHCR.
+- [x] Add guarded local GHCR publishing and forward the automatic version to Compose.

@@ -7,6 +7,8 @@ from pathlib import Path
 import requests
 from geo.Geoserver import Geoserver
 
+from app.core.style_utils import convert_sld_11_to_10
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,10 +22,11 @@ class GeoServerStyleError(Exception):
 
 
 class GeoServerService:
-    def __init__(self, url: str, username: str, password: str, workspace: str):
+    def __init__(self, url: str, username: str, password: str, workspace: str, wms_url: str = ""):
         self.geo = Geoserver(url, username=username, password=password)
         self.workspace = workspace
         self._base_url = url.rstrip("/")
+        self._wms_base_url = wms_url.rstrip("/") if wms_url else self._base_url
         self._auth = (username, password)
 
     def publish_shp(self, final_path: str, store_name: str) -> dict:
@@ -50,8 +53,8 @@ class GeoServerService:
         bbox = self._recalculate_bbox(store_name)
 
         layer_name = f"{self.workspace}:{store_name}"
-        wms_url = f"{self._base_url}/{self.workspace}/wms"
-        wfs_url = f"{self._base_url}/{self.workspace}/wfs"
+        wms_url = f"{self._wms_base_url}/{self.workspace}/wms"
+        wfs_url = f"{self._wms_base_url}/{self.workspace}/wfs"
 
         return {
             "layer_name": layer_name,
@@ -157,6 +160,7 @@ class GeoServerService:
         fallback from PUT->POST is not safe.
         """
         headers = {"Content-Type": "application/vnd.ogc.sld+xml"}
+        sld_body = convert_sld_11_to_10(sld_body)
         style_url = f"{self._base_url}/rest/workspaces/{self.workspace}/styles/{style_name}"
         try:
             exists_resp = requests.get(
@@ -198,3 +202,15 @@ class GeoServerService:
                 )
         except requests.RequestException as exc:
             raise GeoServerStyleError(502, f"GeoServer unreachable: {exc}")
+
+    def get_default_style(self, layer_name: str) -> str | None:
+        """Return the default style name currently set for a layer, or None if
+        the layer/style is unreachable. layer_name is 'workspace:store'."""
+        url = f"{self._base_url}/rest/layers/{layer_name}.json"
+        try:
+            resp = requests.get(url, auth=self._auth, timeout=30)
+            if resp.status_code != 200:
+                return None
+            return ((resp.json().get("layer") or {}).get("defaultStyle") or {}).get("name")
+        except requests.RequestException:
+            return None

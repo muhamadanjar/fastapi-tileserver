@@ -1,0 +1,149 @@
+name: tileserver
+
+x-app-environment: &app-environment
+  TILESERVER_ENV_FILE: /app/.env.docker
+  DB_TYPE: ${TILESERVER_DB_TYPE:-postgresql}
+  DB_HOST: ${TILESERVER_DB_HOST:-host.docker.internal}
+  DB_PORT: ${TILESERVER_DB_PORT:-5432}
+  DB_USER: ${TILESERVER_DB_USER:-postgres}
+  DB_PASSWORD: ${TILESERVER_DB_PASSWORD:-postgres}
+  DB_NAME: ${TILESERVER_DB_NAME:-gis_db}
+  RABBITMQ_URL: ${TILESERVER_RABBITMQ_URL:-amqp://guest:guest@host.docker.internal:5672/}
+  REDIS_URL: ${TILESERVER_REDIS_URL:-redis://host.docker.internal:6379/0}
+  GEOSERVER_URL: ${TILESERVER_GEOSERVER_URL:-http://host.docker.internal:8080/geoserver}
+
+x-app-service: &app-service
+  env_file:
+    - ${TILESERVER_DOCKER_ENV_FILE:-.env.docker}
+  environment: *app-environment
+  extra_hosts:
+    - host.docker.internal:host-gateway
+  networks:
+    - default
+    - usermanagement_network
+  volumes:
+    - tileserver-data:/app/data
+    - tileserver-logs:/app/logs
+
+services:
+  tileserver-dev:
+    <<: *app-service
+    profiles: [development]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: dev
+    ports:
+      - "${TILESERVER_API_PORT:-8000}:8000"
+    volumes:
+      - ./:/app
+      - tileserver-dev-data:/app/data
+      - tileserver-dev-logs:/app/logs
+      # Compatibility for artifacts created by the host-run upload_api before
+      # it was containerised. Read-only: tileserver must never mutate upload data.
+      - ${UPLOAD_API_STORAGE_PATH:-../upload_api/storage}:/app/data/upload-artifacts:ro
+
+  tileserver-worker-dev:
+    <<: *app-service
+    profiles: [development]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: dev
+    command: celery -A app.workers.celery_app worker --loglevel=INFO --queues=tileserver
+    volumes:
+      - ./:/app
+      - tileserver-dev-data:/app/data
+      - tileserver-dev-logs:/app/logs
+      - ${UPLOAD_API_STORAGE_PATH:-../upload_api/storage}:/app/data/upload-artifacts:ro
+
+  tileserver:
+    <<: *app-service
+    profiles: [production]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: production
+      args:
+        VERSION: ${VERSION:-0.0.0}
+    ports:
+      - "${TILESERVER_API_PORT:-8000}:8000"
+
+  tileserver-worker:
+    <<: *app-service
+    profiles: [production]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: production
+      args:
+        VERSION: ${VERSION:-0.0.0}
+    command: celery -A app.workers.celery_app worker --loglevel=INFO --queues=tileserver
+
+  postgres:
+    profiles: [infrastructure]
+    image: postgis/postgis:16-3.5
+    environment:
+      POSTGRES_DB: ${TILESERVER_DB_NAME:-gis_db}
+      POSTGRES_USER: ${TILESERVER_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${TILESERVER_DB_PASSWORD:-postgres}
+    ports:
+      - "${TILESERVER_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    profiles: [infrastructure]
+    image: rabbitmq:3-management
+    ports:
+      - "${TILESERVER_RABBITMQ_PORT:-5672}:5672"
+      - "${TILESERVER_RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    profiles: [infrastructure]
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "${TILESERVER_REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  geoserver:
+    profiles: [infrastructure]
+    image: docker.osgeo.org/geoserver:2.26.2
+    ports:
+      - "${TILESERVER_GEOSERVER_PORT:-8080}:8080"
+    volumes:
+      - geoserver-data:/opt/geoserver/data_dir
+
+volumes:
+  tileserver-data:
+  tileserver-logs:
+  tileserver-dev-data:
+  tileserver-dev-logs:
+  postgres-data:
+  rabbitmq-data:
+  redis-data:
+  geoserver-data:
+
+networks:
+  usermanagement_network:
+    external: true
+    name: ${STORAGE_NETWORK_NAME:-usermanagement_api_usermanagement_network}

@@ -12,7 +12,8 @@ Query layer feature data by coordinate across all layer types.
   "type": "vector|raster",
   "count": 0,
   "features": [{...}],    // vector only
-  "values": {"band_1": X} // raster only
+  "values": {"band_1": X}, // raster only
+  "query_hint": "client"  // optional: frontend reads rendered features (no backend query)
 }
 ```
 
@@ -47,6 +48,18 @@ response = await usecase.execute(layer_id, lon, lat)
 | **esri_mapserver** | Remote Esri MapServer | Esri `identify` endpoint proxy | vector |
 | **esri_tileserver** | Remote Esri (cached MapServer) | Esri `identify` endpoint proxy | vector |
 | **esri_imageserver** | Remote Esri ImageServer | Esri `identify` endpoint proxy | raster (band values) |
+
+## Adapter Registry (2026-09-01)
+
+Per-layer-type behaviour lives in strategy adapters in `app/usecases/getinfo_adapters.py`,
+replacing the old `if/elif` dispatch chain so adding/tuning a layer type is one file.
+The usecase (`QueryLayerFeaturesUseCase`) only resolves the adapter for a layer, calls it,
+then applies shared `file_metadata.fields` filtering.
+
+For render-only types (`mvt`, `geojson`, `kml`, `esri_featureserver`, `esri_vectortileserver`)
+the adapter returns an empty result with `query_hint="client"`. The frontend uses that flag
+(alongside `layer_type`) to read features from its own already-loaded tiles
+(e.g. Deck.gl/MapLibre `querySourceFeatures`) instead of issuing a backend query.
 
 ## Esri Identify (2026-06-10)
 

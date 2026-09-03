@@ -1,3 +1,4 @@
+import os
 from typing import Optional, Dict, Any
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -6,6 +7,7 @@ from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _BASE_DIR = Path(__file__).resolve().parent.parent.parent
+_ENV_FILE = Path(os.getenv("TILESERVER_ENV_FILE", _BASE_DIR / ".env"))
 
 
 class DatabaseSettings(BaseSettings):
@@ -46,7 +48,7 @@ class DatabaseSettings(BaseSettings):
     debug: bool = Field(default=False)
 
     model_config = SettingsConfigDict(
-        env_file=str(_BASE_DIR / ".env"),
+        env_file=str(_ENV_FILE),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,

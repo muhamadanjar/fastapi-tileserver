@@ -1,15 +1,17 @@
 import asyncio
 import os
 import shutil
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 import uuid
 from defusedxml.ElementTree import fromstring as safe_fromstring, ParseError as SafeParseError
 
-from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse
+from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse, LayerLegendResponse, SyncBBoxRequest
 from app.domain.models import Layer, JobStatus
-from app.infrastructure.db.connection import get_async_session
+from app.infrastructure.db.connection import db, get_async_session
 from app.infrastructure.db.repository import LayerRepository, ProjectRepository, UploadSessionRepository
 from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_csw
 from app.infrastructure.services.geoserver_service import GeoServerService, GeoServerStyleError
@@ -19,11 +21,13 @@ from app.core.style_utils import merge_style_state
 from app.core.response import APIResponse
 from app.core.config import settings
 from app.workers.tasks import process_tiling_task, download_esri_layer_task
-from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError
+from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError, LayerSourceUnavailableError
 from app.usecases.getinfo_layer import QueryLayerFeaturesUseCase
 from app.usecases.get_layer_fields import GetLayerFieldsUseCase
 from app.usecases.get_field_unique_values import GetFieldUniqueValuesUseCase
 from app.usecases.get_features_in_bbox import GetFeaturesInBboxUseCase
+from app.usecases.artifact_source import artifact_source_context
+from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
 
 router = APIRouter(prefix="/layers", tags=["layers"])
 
@@ -60,12 +64,104 @@ def _fetch_esri_mapserver_layers(url: str) -> Optional[list]:
     return None
 
 
+def _fetch_wms_layers(url: str) -> Optional[list]:
+    """Discover named WMS layers in a GetCapabilities document."""
+    import requests
+
+    if not url:
+        return None
+    try:
+        parsed = urlsplit(url)
+        params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        params.update({"service": "WMS", "request": "GetCapabilities"})
+        capabilities_url = urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
+        response = requests.get(capabilities_url, params=params, timeout=10)
+        if response.status_code != 200:
+            return None
+        root = safe_fromstring(response.content)
+        layers = []
+        seen = set()
+        for element in root.iter():
+            if element.tag.rsplit("}", 1)[-1] != "Layer":
+                continue
+            children = {child.tag.rsplit("}", 1)[-1]: (child.text or "").strip() for child in element}
+            name = children.get("Name")
+            if name and name not in seen:
+                seen.add(name)
+                layers.append({"id": name, "name": children.get("Title") or name})
+        return layers or None
+    except (requests.RequestException, SafeParseError, ValueError):
+        return None
+
+
 def _get_layer_repo(session=Depends(get_async_session)) -> LayerRepository:
     return LayerRepository(session)
 
 
 def _get_session_repo(session=Depends(get_async_session)) -> UploadSessionRepository:
     return UploadSessionRepository(session)
+
+
+_ESRI_LEGEND_TYPES = {"esri_mapserver", "esri_imageserver"}
+
+
+def _legend_response(layer: Layer) -> LayerLegendResponse:
+    """Return the upstream-native legend location for a layer when available."""
+    metadata = layer.file_metadata or {}
+
+    if layer.layer_type == "wms":
+        layer_name = (metadata.get("geoserver") or {}).get("layer_name")
+        layer_name = layer_name or metadata.get("layers") or metadata.get("layer")
+        if not layer_name:
+            return LayerLegendResponse(
+                layer_id=layer.id,
+                layer_type=layer.layer_type,
+                available=False,
+                detail="WMS layer name is not configured",
+            )
+        parts = urlsplit(layer.tile_url_template)
+        query = dict(parse_qsl(parts.query, keep_blank_values=True))
+        query.update({
+            "service": "WMS",
+            "request": "GetLegendGraphic",
+            "version": "1.3.0",
+            "layer": layer_name,
+            "format": "image/png",
+        })
+        return LayerLegendResponse(
+            layer_id=layer.id,
+            layer_type=layer.layer_type,
+            available=True,
+            legend_url=urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), "")),
+            format="image/png",
+        )
+
+    if layer.layer_type in _ESRI_LEGEND_TYPES:
+        parts = urlsplit(layer.tile_url_template.rstrip("/"))
+        service_name = "MapServer" if layer.layer_type == "esri_mapserver" else "ImageServer"
+        marker = f"/{service_name}"
+        service_path, separator, _ = parts.path.partition(marker)
+        if not parts.scheme or not parts.netloc or not separator:
+            return LayerLegendResponse(
+                layer_id=layer.id,
+                layer_type=layer.layer_type,
+                available=False,
+                detail=f"Layer does not point to an Esri {service_name} service",
+            )
+        return LayerLegendResponse(
+            layer_id=layer.id,
+            layer_type=layer.layer_type,
+            available=True,
+            legend_url=urlunsplit((parts.scheme, parts.netloc, f"{service_path}{marker}/legend", "f=pjson", "")),
+            format="application/json",
+        )
+
+    return LayerLegendResponse(
+        layer_id=layer.id,
+        layer_type=layer.layer_type,
+        available=False,
+        detail=f"Layer type '{layer.layer_type}' does not expose a server-side legend",
+    )
 
 
 @router.get("")
@@ -112,7 +208,7 @@ async def list_layers(
             tile_url_template=layer.tile_url_template,
             status=status,
             created_at=layer.created_at,
-            bbox=[layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north] if all([layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]) else None,
+            bbox=[layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north] if all(v is not None for v in [layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]) else None,
             file_metadata=layer.file_metadata,
         ))
 
@@ -121,6 +217,17 @@ async def list_layers(
         data=responses,
         metas=metas
     )
+
+
+@router.get("/{layer_id}/legend", response_model=LayerLegendResponse)
+async def get_layer_legend(
+    layer_id: str,
+    repo: LayerRepository = Depends(_get_layer_repo),
+):
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+    return _legend_response(layer)
 
 
 @router.get("/{layer_id}", response_model=LayerResponse)
@@ -149,7 +256,7 @@ async def get_layer(
         tile_url_template=layer.tile_url_template,
         status=status,
         created_at=layer.created_at,
-        bbox=[layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north] if all([layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]) else None,
+        bbox=[layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north] if all(v is not None for v in [layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]) else None,
         file_metadata=layer.file_metadata,
     )
 
@@ -173,11 +280,16 @@ async def patch_layer(
 
     # Determine layer type (use request value or existing value)
     layer_type = req.layer_type or existing.layer_type
-    tile_url = req.tile_url_template or existing.tile_url_template
+    tile_url_update = req.tile_url_template if req.tile_url_template is not None else req.source_url
+    tile_url = tile_url_update or existing.tile_url_template
 
-    # Fetch available layers untuk ESRI MapServer jika URL berubah
-    if layer_type == 'esri_mapserver' and req.tile_url_template:
+    # Fetch available sublayers untuk services that expose them.
+    if layer_type == 'esri_mapserver' and tile_url_update:
         layers_list = await asyncio.to_thread(_fetch_esri_mapserver_layers, tile_url)
+        if layers_list:
+            file_metadata['availableLayers'] = layers_list
+    elif layer_type == 'wms' and tile_url:
+        layers_list = await asyncio.to_thread(_fetch_wms_layers, tile_url)
         if layers_list:
             file_metadata['availableLayers'] = layers_list
 
@@ -186,7 +298,7 @@ async def patch_layer(
         file_metadata=file_metadata,
         filename=req.filename,
         layer_type=req.layer_type,
-        tile_url_template=req.tile_url_template,
+        tile_url_template=tile_url_update,
         abstract=req.abstract,
         topic_category=req.topic_category,
         language=req.language,
@@ -223,7 +335,7 @@ async def patch_layer(
         tile_url_template=updated.tile_url_template,
         status=status,
         created_at=updated.created_at,
-        bbox=[updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north] if all([updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north]) else None,
+        bbox=[updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north] if all(v is not None for v in [updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north]) else None,
         file_metadata=updated.file_metadata,
         abstract=updated.abstract,
         topic_category=updated.topic_category,
@@ -314,6 +426,12 @@ async def put_layer_style(
     except GeoServerStyleError as exc:
         raise HTTPException(status_code=exc.http_status, detail=exc.detail)
 
+    # Verify the style actually landed as the layer default (guards against
+    # silent grey maps when the target layer name is wrong/duplicated).
+    default_style_name = await asyncio.to_thread(svc.get_default_style, gs_meta["layer_name"])
+    expected = f"{settings.GEOSERVER_WORKSPACE}:{style_name}"
+    style_verified = default_style_name == expected
+
     updated = await repo.update(
         layer_id,
         file_metadata={
@@ -345,6 +463,8 @@ async def put_layer_style(
         abstract=updated.abstract,
         topic_category=updated.topic_category,
         language=updated.language,
+        style_verified=style_verified,
+        default_style_name=default_style_name,
     )
 
 
@@ -353,6 +473,8 @@ async def sync_layer_bbox(
     layer_id: str,
     repo: LayerRepository = Depends(_get_layer_repo),
     upload_repo: UploadSessionRepository = Depends(_get_session_repo),
+    req: Optional[SyncBBoxRequest] = None,
+    authorization: Optional[str] = Header(default=None),
 ):
     from app.infrastructure.services.bbox_extractor import extract_bbox, extract_bbox_from_file, get_crs_from_file
     import os
@@ -369,17 +491,34 @@ async def sync_layer_bbox(
                       'esri_mapserver', 'esri_featureserver', 'esri_tileserver',
                       'esri_vectortileserver', 'esri_imageserver'}
 
-    if layer.layer_type in FILE_BASED_TYPES:
+    if req is not None:
+        bbox = tuple(req.bbox)
+
+    elif layer.layer_type in FILE_BASED_TYPES:
         if not layer.upload_session_id:
             raise HTTPException(status_code=422, detail="No source file: layer has no upload session")
         session = await upload_repo.get_by_id(layer.upload_session_id)
         if not session or not session.final_path:
             raise HTTPException(status_code=422, detail="Source file path not found in upload session")
-        if not os.path.exists(session.final_path):
-            raise HTTPException(status_code=422, detail="Source file no longer exists on disk")
-        bbox = await asyncio.to_thread(extract_bbox_from_file, session.final_path)
-        if bbox:
-            crs_str = await asyncio.to_thread(get_crs_from_file, session.final_path)
+        try:
+            async with artifact_source_context(
+                session.final_path,
+                session.filename,
+                authorization,
+                f"sync-bbox:{layer.id}",
+            ) as source_path:
+                if not source_path:
+                    raise HTTPException(status_code=422, detail="Source file no longer exists on disk")
+                bbox = await asyncio.to_thread(extract_bbox_from_file, source_path)
+                if bbox:
+                    crs_str = await asyncio.to_thread(get_crs_from_file, source_path)
+        except PermissionError as exc:
+            raise HTTPException(status_code=401, detail=str(exc))
+        except HTTPException:
+            raise
+        except Exception as exc:
+            # Lease artifact bisa sudah dilepas setelah tiling; beri pesan yang jujur, bukan 500.
+            raise HTTPException(status_code=422, detail=f"Source file unavailable: {exc}")
 
     elif layer.layer_type in EXTERNAL_TYPES:
         params = dict(layer.file_metadata or {}) if layer.file_metadata else {}
@@ -396,7 +535,7 @@ async def sync_layer_bbox(
     if crs_str:
         new_metadata['crs'] = crs_str
 
-    await repo.update(
+    updated = await repo.update(
         layer_id=layer_id,
         bbox_west=west,
         bbox_south=south,
@@ -404,6 +543,11 @@ async def sync_layer_bbox(
         bbox_north=north,
         file_metadata=new_metadata,
     )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Layer not found")
+
+    # Keep the CSW record spatial extent consistent with the layer row.
+    await asyncio.to_thread(sync_layer, updated)
 
     return {
         "message": "BBox synced",
@@ -416,6 +560,8 @@ async def sync_layer_bbox(
 @router.post("/{layer_id}/retile")
 async def retile_layer(
     layer_id: str,
+    max_zoom: int = Query(..., ge=0, le=22, description="Maximum zoom level for regenerated tiles"),
+    authorization: Optional[str] = Header(default=None),
     repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
@@ -428,15 +574,50 @@ async def retile_layer(
     upload_session = await session_repo.get_by_id(layer.upload_session_id)
     if not upload_session or not upload_session.final_path:
         raise HTTPException(status_code=404, detail="Source file not found")
-    if not Path(upload_session.final_path).exists():
+    # Artifact handoff: worker process_tiling_task sudah handle materialize "artifact://",
+    # jadi jangan tolak di pre-check ini.
+    is_artifact = upload_session.final_path.startswith("artifact://")
+    if not is_artifact and not Path(upload_session.final_path).exists():
         raise HTTPException(status_code=404, detail="Source file missing from disk")
 
-    output_format = "mvt" if layer.layer_type == "mvt" else "raster"
-    process_tiling_task.delay(
-        upload_session.id, layer.id,
-        layer.file_type, upload_session.final_path, output_format
-    )
-    return {"message": "Retiling queued", "upload_id": upload_session.id}
+    if layer.file_type not in ("vector", "raster"):
+        raise HTTPException(status_code=422, detail="Only SHP/vector and raster layers can be retiled")
+
+    temporary_lease_id = None
+    if is_artifact:
+        if not authorization:
+            raise HTTPException(status_code=401, detail="Authorization is required to retile an artifact source")
+        artifact_id = upload_session.final_path.removeprefix("artifact://")
+        client = None
+        try:
+            client = UploadArtifactClient()
+            grant_id = await asyncio.to_thread(client.create_user_grant, artifact_id, authorization)
+            lease = await asyncio.to_thread(
+                client.acquire_lease, artifact_id, grant_id, f"retile:{layer.id}:{uuid.uuid4()}",
+            )
+            temporary_lease_id = str(lease["lease_id"])
+            await session_repo.set_artifact_lease(upload_session.id, temporary_lease_id)
+        except Exception as exc:
+            if temporary_lease_id and client:
+                try:
+                    await asyncio.to_thread(client.release_lease, artifact_id, temporary_lease_id)
+                except Exception:
+                    pass
+            raise HTTPException(status_code=424, detail="Source artifact is unavailable for retile") from exc
+
+    output_format = upload_session.output_format or ("mvt" if layer.layer_type == "mvt" else "raster")
+    try:
+        task = process_tiling_task.delay(
+            upload_session.id, layer.id,
+            layer.file_type, upload_session.final_path, output_format, max_zoom
+        )
+    except Exception:
+        if temporary_lease_id:
+            await asyncio.to_thread(client.release_lease, artifact_id, temporary_lease_id)
+            await session_repo.set_artifact_lease(upload_session.id, None)
+        raise
+    await session_repo.start_tiling(upload_session.id, task.id, output_format, max_zoom)
+    return {"message": "Retiling queued", "upload_id": upload_session.id, "max_zoom": max_zoom}
 
 
 _DOWNLOADABLE_ESRI_TYPES = ("esri_mapserver", "esri_featureserver")
@@ -555,23 +736,34 @@ async def add_external_layer(
 ):
     from app.infrastructure.services.bbox_extractor import extract_bbox
 
+    # The UI uses `params`; manual API clients commonly send `file_metadata`.
+    # Normalize both shapes before bbox extraction and persistence.
+    file_metadata = dict(req.file_metadata or {})
+    file_metadata.update(req.params or {})
+
     # Fetch bbox dari remote service (jika tidak override di request)
     bbox_result = None
     if req.bbox and len(req.bbox) == 4:
         bbox_result = tuple(req.bbox)
     else:
-        bbox_result = await asyncio.to_thread(extract_bbox, req.layer_type, req.source_url, req.params)
+        bbox_result = await asyncio.to_thread(
+            extract_bbox,
+            req.layer_type,
+            req.source_url,
+            file_metadata,
+        )
 
     filename_without_ext = Path(req.filename).stem
     base_code = slugify(filename_without_ext)
     unique_code = await generate_unique_code(base_code, repo.code_exists)
 
-    # Prepare file metadata
-    file_metadata = req.params or {}
-
-    # Fetch available layers untuk ESRI MapServer
+    # Fetch available sublayers for the selected external service.
     if req.layer_type == 'esri_mapserver':
         layers_list = await asyncio.to_thread(_fetch_esri_mapserver_layers, req.source_url)
+        if layers_list:
+            file_metadata['availableLayers'] = layers_list
+    elif req.layer_type == 'wms':
+        layers_list = await asyncio.to_thread(_fetch_wms_layers, req.source_url)
         if layers_list:
             file_metadata['availableLayers'] = layers_list
 
@@ -603,7 +795,7 @@ async def add_external_layer(
         status="done",
         created_at=created.created_at,
         bbox=[created.bbox_west, created.bbox_south, created.bbox_east, created.bbox_north]
-            if all([created.bbox_west, created.bbox_south, created.bbox_east, created.bbox_north])
+            if all(v is not None for v in [created.bbox_west, created.bbox_south, created.bbox_east, created.bbox_north])
             else None,
         file_metadata=created.file_metadata,
         abstract=created.abstract,
@@ -621,6 +813,20 @@ def _fmt_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} TB"
 
 
+def _postgis_table_names(postgis: dict) -> list[str]:
+    datasets = postgis.get("datasets") or []
+    tables = [
+        dataset["table"]
+        for dataset in datasets
+        if isinstance(dataset, dict)
+        and dataset.get("schema", "geodata") == "geodata"
+        and dataset.get("table")
+    ]
+    if not tables and postgis.get("schema") == "geodata" and postgis.get("table"):
+        tables.append(postgis["table"])
+    return list(dict.fromkeys(tables))
+
+
 @router.get("/{layer_id}/delete-preview")
 async def get_delete_preview(
     layer_id: str,
@@ -635,6 +841,14 @@ async def get_delete_preview(
 
     # DB record — always present
     items.append({"type": "db_record", "label": "Layer record", "detail": layer.filename})
+
+    postgis = (layer.file_metadata or {}).get("postgis") or {}
+    for table_name in _postgis_table_names(postgis):
+        items.append({
+            "type": "postgis_table",
+            "label": "PostGIS table",
+            "detail": f"geodata.{table_name}",
+        })
 
     # Tile files on disk
     tile_dir = Path(settings.TILES_DIR) / layer_id
@@ -686,6 +900,25 @@ async def delete_layer(
     if upload_session_id:
         upload_session = await session_repo.get_by_id(upload_session_id)
 
+    # Drop the owned dynamic table before any other destructive work. If this
+    # fails, retain the Layer and its other files so deletion can be retried.
+    postgis = (layer.file_metadata or {}).get("postgis") or {}
+    postgis_tables = _postgis_table_names(postgis)
+    if postgis_tables:
+        from app.infrastructure.services.shapefile_import_service import drop_geodata_tables
+
+        try:
+            await asyncio.to_thread(
+                drop_geodata_tables,
+                db.get_engine(),
+                postgis_tables,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to drop PostGIS tables {', '.join(postgis_tables)}: {exc}",
+            ) from exc
+
     # 1. Delete tile files from disk
     tile_dir = Path(settings.TILES_DIR) / layer_id
     if tile_dir.exists():
@@ -724,26 +957,38 @@ async def delete_layer(
 async def get_layer_fields(
     layer_id: str,
     layerIndex: int = Query(None),
+    layerName: Optional[str] = Query(default=None),
+    authorization: Optional[str] = Header(default=None),
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
     usecase = GetLayerFieldsUseCase(layer_repo, session_repo)
     try:
-        return await usecase.execute(layer_id, layer_index=layerIndex)
+        return await usecase.execute(
+            layer_id,
+            layer_index=layerIndex,
+            layer_name=layerName,
+            authorization=authorization,
+        )
     except (LayerNotFoundError, LayerFieldsUnavailableError) as exc:
         raise HTTPException(status_code=404, detail=exc.message)
+    except LayerSourceUnavailableError as exc:
+        raise HTTPException(status_code=424, detail=exc.message)
 
 
 @router.get("/{layer_id}/fields/{field_name}/values", response_model=FieldUniqueValuesResponse)
 async def get_field_unique_values(
     layer_id: str,
     field_name: str,
+    authorization: Optional[str] = Header(default=None),
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
     usecase = GetFieldUniqueValuesUseCase(layer_repo, session_repo)
     try:
-        return await usecase.execute(layer_id, field_name)
+        return await usecase.execute(layer_id, field_name, authorization=authorization)
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
     except (LayerNotFoundError, LayerFieldsUnavailableError) as exc:
         raise HTTPException(status_code=404, detail=exc.message)
 
@@ -756,12 +1001,17 @@ async def get_features_in_bbox(
     east: float = Query(...),
     north: float = Query(...),
     limit: int = Query(default=200, le=500),
+    authorization: Optional[str] = Header(default=None),
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
     usecase = GetFeaturesInBboxUseCase(layer_repo, session_repo)
     try:
-        return await usecase.execute(layer_id, west, south, east, north, limit)
+        return await usecase.execute(
+            layer_id, west, south, east, north, limit, authorization=authorization,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
     except (LayerNotFoundError, LayerFieldsUnavailableError) as exc:
         raise HTTPException(status_code=404, detail=exc.message)
 
@@ -771,11 +1021,15 @@ async def query_features(
     layer_id: str,
     lon: float,
     lat: float,
+    authorization: Optional[str] = Header(default=None),
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
     usecase = QueryLayerFeaturesUseCase(layer_repo, session_repo)
-    return await usecase.execute(layer_id, lon, lat)
+    try:
+        return await usecase.execute(layer_id, lon, lat, authorization=authorization)
+    except LayerSourceUnavailableError as exc:
+        raise HTTPException(status_code=424, detail=exc.message)
 
 
 @router.post("/{layer_id}/mbtiles")

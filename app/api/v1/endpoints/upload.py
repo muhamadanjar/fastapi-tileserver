@@ -1,6 +1,7 @@
 import asyncio
 import os
 import shutil
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
@@ -15,10 +16,12 @@ from app.core.exceptions import (
     SessionExpiredError,
     UnsupportedFileFormatException,
 )
-from app.domain.models import JobStatus, Layer, LayerType
+from app.domain.models import ImportStatus, JobStatus, Layer, LayerType
 from app.domain.schemas import (
     ChunkUploadResponse,
     JobStatusResponse,
+    ShapefileImportedTable,
+    ShapefileImportStatus,
     UploadInitRequest,
     UploadInitResponse,
     ArtifactTilingRequest,
@@ -30,12 +33,11 @@ from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import UploadSessionRepository, LayerRepository
 from app.usecases.init_chunked_upload import InitChunkedUploadUseCase
 from app.usecases.receive_chunk import ReceiveChunkUseCase
-from app.workers.tasks import process_tiling_task
-from app.infrastructure.services.geoserver_service import GeoServerService
-from app.infrastructure.services.bbox_extractor import extract_bbox_from_file
+from app.workers.tasks import process_tiling_task, publish_geoserver_task
 from app.infrastructure.services.file_service import FileService
 from app.infrastructure.services.upload_artifact_client import UploadArtifactClient, UploadArtifactClientError
 from app.domain.models import UploadSession
+from app.usecases.shapefile_import_dispatch import dispatch_shapefile_import
 
 router = APIRouter(prefix="/uploads", tags=["uploads"])
 
@@ -209,8 +211,25 @@ async def publish_to_geoserver(
             detail=f"Cannot publish from status '{session.status}'. Must be 'uploaded' or 'failed'.",
         )
 
-    if not session.final_path or not os.path.exists(session.final_path):
+    # Artifact handoff (upload-api) menyimpan final_path="artifact://<id>"; the worker
+    # materializes it via upload-api. Local files must exist on disk (fast fail).
+    if session.final_path and not session.final_path.startswith("artifact://") and not os.path.exists(session.final_path):
         raise HTTPException(status_code=400, detail="Assembled file not found on disk")
+
+    # Duplicate-publish guard: the same file being published as WMS more than once
+    # silently creates multiple GeoServer layers and "grey map" confusion. Reject a
+    # re-publish of a source file that is already a published WMS layer.
+    layer_name = f"{settings.GEOSERVER_WORKSPACE}:{slugify(Path(session.filename).stem)}"
+    existing = await layer_repo.find_geoserver_layer_name(layer_name)
+    if existing and existing.id != session.layer_id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Source file is already published as WMS layer '{layer_name}' "
+                f"(layer id {existing.id}). Duplicate publishes are blocked to avoid "
+                "multi-layer style confusion."
+            ),
+        )
 
     await repo.set_status(upload_id, JobStatus.processing)
 
@@ -219,70 +238,14 @@ async def publish_to_geoserver(
     base_code = slugify(filename_without_ext)
     code = await generate_unique_code(base_code, layer_repo.code_exists)
 
-    try:
-        svc = GeoServerService(
-            url=settings.GEOSERVER_URL,
-            username=settings.GEOSERVER_USER,
-            password=settings.GEOSERVER_PASSWORD,
-            workspace=settings.GEOSERVER_WORKSPACE,
-        )
-        result = svc.publish_shp(session.final_path, code)
-    except Exception as exc:
-        await repo.set_status(upload_id, JobStatus.failed, str(exc))
-        raise HTTPException(status_code=502, detail=f"GeoServer publish failed: {exc}")
-
-    from app.infrastructure.services.bbox_extractor import extract_bbox_from_file, get_crs_from_file
-
-    # bbox: prioritas dari file lokal, fallback hasil recalculate GeoServer
-    bbox = extract_bbox_from_file(session.final_path) or result.get("bbox")
-    crs_str = get_crs_from_file(session.final_path) if bbox else None
-
-    geoserver_meta = {**result}
-    if crs_str:
-        geoserver_meta['crs'] = crs_str
-
-    existing_layer = await layer_repo.get_by_id(layer_id)
-    if existing_layer:
-        await layer_repo.update(
-            layer_id=layer_id,
-            layer_type=LayerType.wms,
-            tile_url_template=result["wms_url"],
-            file_metadata={
-                "geoserver": geoserver_meta,
-                "layers": geoserver_meta.get("layer_name"),
-            },
-            bbox_west=bbox[0] if bbox else None,
-            bbox_south=bbox[1] if bbox else None,
-            bbox_east=bbox[2] if bbox else None,
-            bbox_north=bbox[3] if bbox else None,
-        )
-    else:
-        layer = Layer(
-            id=layer_id,
-            upload_session_id=upload_id,
-            code=code,
-            layer_type=LayerType.wms,
-            filename=session.filename,
-            file_type='external',
-            tile_url_template=result["wms_url"],
-            file_metadata={"geoserver": geoserver_meta, "layers": geoserver_meta.get("layer_name")},
-            bbox_west=bbox[0] if bbox else None,
-            bbox_south=bbox[1] if bbox else None,
-            bbox_east=bbox[2] if bbox else None,
-            bbox_north=bbox[3] if bbox else None,
-        )
-        await layer_repo.create(layer)
-
-    await repo.set_status(upload_id, JobStatus.done)
+    task = publish_geoserver_task.delay(upload_id=upload_id, layer_id=layer_id, code=code)
+    await repo.set_task_id(upload_id, task.id)
 
     return {
-        "message": "Layer published to GeoServer",
+        "message": "GeoServer publish started",
         "upload_id": upload_id,
         "layer_id": layer_id,
-        "layer_name": result["layer_name"],
-        "wms_url": result["wms_url"],
-        "wfs_url": result["wfs_url"],
-        "workspace": result["workspace"],
+        "status": "processing",
     }
 
 
@@ -311,8 +274,19 @@ async def save_geojson(
             detail=f"Cannot save from status '{session.status}'. Must be 'uploaded' or 'failed'.",
         )
 
-    if not session.final_path or not os.path.exists(session.final_path):
+    # Artifact handoff (upload-api): final_path="artifact://<id>", materiakan dulu (pola sama dengan publish geoserver).
+    artifact_id = (
+        session.final_path.removeprefix("artifact://")
+        if session.final_path and session.final_path.startswith("artifact://")
+        else None
+    )
+    if artifact_id is None and (not session.final_path or not os.path.exists(session.final_path)):
         raise HTTPException(status_code=400, detail="Assembled file not found on disk")
+    source_ctx = (
+        UploadArtifactClient().materialize(artifact_id, session.filename)
+        if artifact_id
+        else nullcontext(session.final_path)
+    )
 
     is_kml = filename_lower.endswith('.kml')
     layer_id = session.layer_id
@@ -329,12 +303,17 @@ async def save_geojson(
     layer_dir = Path(settings.TILES_DIR) / layer_id
     layer_dir.mkdir(parents=True, exist_ok=True)
 
-    # Copy GeoJSON or JSON as-is
     dest_path = layer_dir / f"data{file_ext}"
-    shutil.copy2(session.final_path, dest_path)
 
-    # Extract bbox
-    bbox = extract_bbox_from_file(session.final_path)
+    with source_ctx as materialized_source:
+        # prepare_source_path menyamakan behavior dengan flow lokal: KML dikonversi ke GeoJSON.
+        source_path, _ = FileService.prepare_source_path(Path(materialized_source))
+
+        # Copy GeoJSON or JSON as-is
+        shutil.copy2(source_path, dest_path)
+
+        # Extract bbox
+        bbox = extract_bbox_from_file(source_path)
 
     # Create or update layer
     tile_url_template = f"/{layer_id}/data{file_ext}"
@@ -411,12 +390,34 @@ async def get_upload_status(
         else:
             tile_url = f"/tiles/{session.layer_id}/{{z}}/{{x}}/{{y}}.png"
 
+    layer_repo = LayerRepository(session_dep)
+    layer = await layer_repo.get_by_id(session.layer_id)
     bbox = None
-    if session.status == "done":
-        layer_repo = LayerRepository(session_dep)
-        layer = await layer_repo.get_by_id(session.layer_id)
-        if layer and layer.bbox_west is not None:
-            bbox = [layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]
+    if session.status == "done" and layer and layer.bbox_west is not None:
+        bbox = [layer.bbox_west, layer.bbox_south, layer.bbox_east, layer.bbox_north]
+
+    postgis_metadata = ((layer.file_metadata or {}).get("postgis") or {}) if layer else {}
+    imported_tables = [
+        ShapefileImportedTable(
+            schema=dataset.get("schema", "geodata"),
+            table=dataset["table"],
+            geometry_family=dataset.get("geometry_family"),
+            row_count=int(dataset.get("row_count") or 0),
+            bbox=dataset.get("bbox"),
+        )
+        for dataset in postgis_metadata.get("datasets", [])
+        if isinstance(dataset, dict) and dataset.get("table")
+    ]
+    if not imported_tables and postgis_metadata.get("table"):
+        imported_tables = [
+            ShapefileImportedTable(
+                schema=postgis_metadata.get("schema", "geodata"),
+                table=postgis_metadata["table"],
+                geometry_family=postgis_metadata.get("geometry_family"),
+                row_count=int(postgis_metadata.get("row_count") or 0),
+                bbox=postgis_metadata.get("bbox"),
+            )
+        ]
 
     progress_percent = round(session.uploaded_chunks / session.total_chunks * 100, 2) if session.total_chunks else 0.0
     chunk_map = session.chunk_map if session.status == "uploading" else None
@@ -434,7 +435,137 @@ async def get_upload_status(
         error_message=session.error_message,
         tile_url_template=tile_url,
         bbox=bbox,
+        import_process=ShapefileImportStatus(
+            status=session.import_status,
+            task_id=session.import_task_id,
+            table=session.import_table_name,
+            processed_rows=session.import_processed_rows,
+            total_rows=session.import_total_rows,
+            progress_percent=(
+                round(session.import_processed_rows / session.import_total_rows * 100, 2)
+                if session.import_total_rows
+                else 0.0
+            ),
+            row_count=session.imported_row_count,
+            tables=imported_tables,
+            error=session.import_error,
+            imported_at=session.imported_at,
+        ),
     )
+
+
+def _validate_shapefile_import_source(session: UploadSession) -> None:
+    if not session.filename.lower().endswith(".zip"):
+        raise HTTPException(status_code=422, detail="Only shapefile ZIP files can be imported")
+    if session.status not in {JobStatus.uploaded, JobStatus.done}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Upload is not ready with status '{session.status}'",
+        )
+    if not session.artifact_id and (
+        not session.final_path or not Path(session.final_path).exists()
+    ):
+        raise HTTPException(status_code=404, detail="Source ZIP is no longer available")
+
+
+@router.post("/{upload_id}/import", status_code=202)
+async def start_shapefile_import(
+    upload_id: str,
+    repo: UploadSessionRepository = Depends(_get_repo),
+):
+    session = await repo.get_by_id(upload_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+    if session.import_status != ImportStatus.not_applicable:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot start import with status '{session.import_status}'",
+        )
+    _validate_shapefile_import_source(session)
+
+    task_id = await dispatch_shapefile_import(session, repo)
+    if not task_id:
+        refreshed = await repo.get_by_id(upload_id)
+        raise HTTPException(
+            status_code=503,
+            detail=refreshed.import_error if refreshed else "Failed to enqueue import",
+        )
+    return {
+        "message": "Shapefile import queued",
+        "upload_id": upload_id,
+        "layer_id": session.layer_id,
+        "task_id": task_id,
+        "status": ImportStatus.pending,
+    }
+
+
+@router.post("/{upload_id}/import/retry", status_code=202)
+async def retry_shapefile_import(
+    upload_id: str,
+    repo: UploadSessionRepository = Depends(_get_repo),
+):
+    session = await repo.get_by_id(upload_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+    if session.import_status != ImportStatus.failed:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot retry import with status '{session.import_status}'",
+        )
+    _validate_shapefile_import_source(session)
+
+    task_id = await dispatch_shapefile_import(session, repo)
+    if not task_id:
+        refreshed = await repo.get_by_id(upload_id)
+        raise HTTPException(
+            status_code=503,
+            detail=refreshed.import_error if refreshed else "Failed to enqueue import",
+        )
+    return {
+        "message": "Shapefile import re-queued",
+        "upload_id": upload_id,
+        "layer_id": session.layer_id,
+        "task_id": task_id,
+        "status": ImportStatus.pending,
+    }
+
+
+@router.delete("/{upload_id}/import")
+async def cancel_shapefile_import(
+    upload_id: str,
+    repo: UploadSessionRepository = Depends(_get_repo),
+):
+    session = await repo.get_by_id(upload_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Upload session not found")
+    if session.import_status not in {ImportStatus.pending, ImportStatus.processing}:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot cancel import with status '{session.import_status}'",
+        )
+
+    await repo.set_import_status(upload_id, ImportStatus.cancelled)
+    if session.import_task_id:
+        from app.workers.celery_app import celery_app
+
+        celery_app.control.revoke(session.import_task_id, terminate=True, signal="SIGTERM")
+
+    from app.infrastructure.db.connection import db
+    from app.infrastructure.services.shapefile_import_service import drop_import_staging_table
+
+    try:
+        await run_in_threadpool(drop_import_staging_table, db.get_engine(), upload_id)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Import cancelled but staging cleanup failed: {exc}",
+        ) from exc
+
+    return {
+        "message": "Shapefile import cancelled",
+        "upload_id": upload_id,
+        "status": ImportStatus.cancelled,
+    }
 
 
 @router.post("/{upload_id}/retry")

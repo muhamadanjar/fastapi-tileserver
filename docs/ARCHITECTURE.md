@@ -52,7 +52,9 @@ tileserver_api/
 │   └── chunks/            # Temp chunk parts: {upload_id}/{index}.part
 ├── .env                   # Environment variables (git-ignored)
 ├── .env.example           # Example config
-├── requirements.txt       # Python dependencies
+├── requirements.txt       # Shared Python dependencies
+├── requirements-dev.txt   # Local development profile (service_auth test extras)
+├── requirements-prod.txt  # Production profile (pinned public service_auth over Git HTTPS)
 └── CLAUDE.md              # Development guide (this repo)
 ```
 

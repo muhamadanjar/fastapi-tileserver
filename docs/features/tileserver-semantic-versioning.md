@@ -17,21 +17,34 @@ Build it from this service directory:
 make docker-build
 ```
 
+Docker Compose receives that same resolved version automatically. To publish a
+release image manually, authenticate with a GitHub PAT that has
+`packages:write`, check out the matching semantic Git tag, then run:
+
+```bash
+make docker-login-ghcr
+make docker-publish
+```
+
+`docker-publish` refuses to run unless `HEAD` is exactly on the resolved
+semantic Git tag. It builds and pushes both
+`ghcr.io/muhamadanjar/tileserver:<version>` and
+`ghcr.io/muhamadanjar/tileserver:latest`. Override `GHCR_OWNER` only when
+publishing the image to another GitHub owner or organization.
+
 Run the image:
 
 ```bash
 make docker-run
 ```
 
-`make docker-build` derives the image tag from the latest semantic Git tag. Before the first release, it uses `tileserver:0.0.0`.
+`make docker-build` derives the image tag from the highest semantic Git tag in the repository. Before the first release, it uses `tileserver:0.0.0`.
 
 ## GitHub Container Registry
 
 When semantic-release creates a new release, the same workflow builds and publishes `ghcr.io/muhamadanjar/tileserver:<version>` and `ghcr.io/muhamadanjar/tileserver:latest`. It does not publish an image when no new release is created.
 
-The build checks out `muhamadanjar/service_auth` as the Docker build's shared-library dependency. If that repository is private, configure `SERVICE_AUTH_TOKEN` as a repository secret with read access to it.
-
-The Make target uses the monorepo root as the Docker build context, allowing the Dockerfile to copy the shared `libs/service_auth` package.
+The production build installs the pinned public `muhamadanjar/service_auth` revision through Git HTTPS. No deploy key or SSH agent is required for local or CI image builds.
 
 Related Plan: [Tileserver Semantic Versioning Plan](../plans/tileserver-semantic-versioning.md)
 

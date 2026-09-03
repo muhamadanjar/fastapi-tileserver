@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import logging
 import tempfile
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -38,6 +39,7 @@ class UploadArtifactClient:
                 "OAUTH_AUDIENCE and OAUTH_SCOPES must be configured for OAuth calls"
             )
         if oauth_client_id and oauth_client_secret:
+            print(os.getenv('OAUTH_TOKEN_URL'))
             self._oauth = SyncOAuthServiceClient(
                 os.getenv("OAUTH_TOKEN_URL", "http://localhost:8000/oauth/token"),
                 oauth_client_id,
@@ -63,27 +65,42 @@ class UploadArtifactClient:
     @property
     def headers(self) -> dict[str, str]:
         if self._oauth:
-            return self._oauth.authorization_header()
+            return {**self._oauth.authorization_header(), "X-Upload-Internal-Client": "true"}
         record_auth_event(
             "legacy_static_token",
             outcome="used",
             caller_service="tileserver-api",
             resource_service="upload-api",
         )
-        return {"Authorization": f"Bearer {self.legacy_token}"}
+        return {"Authorization": f"Bearer {self.legacy_token}", "X-Upload-Internal-Client": "true"}
 
     def acquire_lease(self, artifact_id: str, grant_id: str, reference: str) -> dict:
-        print(self.headers)
         response = requests.put(
             f"{self.base_url}/artifacts/{artifact_id}/leases",
             headers=self.headers,
             json={"grant_id": grant_id, "consumer_reference": reference},
             timeout=15,
         )
-        print("response", response.text)
         if response.status_code >= 400:
             raise UploadArtifactClientError(response.text[:500])
         return response.json()
+
+    def create_user_grant(self, artifact_id: str, authorization: str) -> str:
+        """Create a one-time handoff grant using the layer editor's user token."""
+        if not authorization.startswith("Bearer "):
+            raise UploadArtifactClientError("User authorization is required to synchronize artifact fields")
+        response = requests.post(
+            f"{self.base_url}/artifacts/{artifact_id}/grants",
+            headers={"Authorization": authorization, "Idempotency-Key": str(uuid.uuid4())},
+            json={"consumer": "tileserver-api"},
+            timeout=15,
+        )
+        if response.status_code >= 400:
+            raise UploadArtifactClientError(response.text[:500])
+        grant_id = response.json().get("grant_id")
+        if not grant_id:
+            raise UploadArtifactClientError("Upload API did not return an artifact grant")
+        return str(grant_id)
 
     def metadata(self, artifact_id: str) -> dict:
         response = requests.get(

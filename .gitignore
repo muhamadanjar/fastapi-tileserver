@@ -3,6 +3,7 @@ venv
 __pycache__
 data/*
 .env
+.env.docker
 .vscode
 logs/*
 graphify-out

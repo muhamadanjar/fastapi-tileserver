@@ -3,15 +3,15 @@
 ## Getting Started
 
 ### Prerequisites
-- Python 3.11+
-- Docker (for RabbitMQ)
+- Python 3.12+
+- Docker (for RabbitMQ and image builds)
 - PostgreSQL (or MySQL/SQLite for dev)
 
 ### Setup
 
-1. Install dependencies:
+1. Install development dependencies (using the local `service_auth` checkout):
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 ```
 
 2. Configure environment:
@@ -37,6 +37,57 @@ celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
 
 API docs available at `http://localhost:8080/docs`
 
+## Docker
+
+Docker Compose provides separate application profiles for development and
+production. PostgreSQL/PostGIS, RabbitMQ, Redis, and GeoServer are optional:
+they are only created when the `infrastructure` profile is explicitly enabled.
+This lets the API and Celery worker use managed or otherwise external services.
+
+Docker uses its own configuration file. Create it once; this does not alter the
+`.env` used by local Python commands:
+
+```bash
+cp .env.docker.example .env.docker
+```
+
+### Development with external infrastructure
+
+Configure the external endpoints in `.env.docker` with `TILESERVER_*` variables,
+then start the development API and worker. Source files are mounted into the
+containers and Uvicorn reload is enabled.
+
+```bash
+make docker-up-dev
+```
+
+### Development with local infrastructure
+
+The default `.env.docker.example` already points at Compose service names. Then
+start the two profiles together:
+
+```bash
+docker compose --env-file .env.docker --profile infrastructure --profile development up --build
+```
+
+### Production target
+
+The production profile uses the minimal `production` target from
+`docker/Dockerfile` and runs both the API and worker:
+
+```bash
+make docker-up-prod
+```
+
+Stop Compose services with:
+
+```bash
+make docker-down
+```
+
+For all configuration variables and usage details, see
+[Docker Compose with Optional Infrastructure](docs/features/docker-compose-optional-infrastructure.md).
+
 ## Version Management
 
 Releases are fully managed by [semantic-release](https://semantic-release.gitbook.io/semantic-release/). On every push to `main` or `master`, it analyzes Conventional Commit messages, calculates the next semantic version, creates the Git tag and GitHub Release, and generates release notes. Git tags have no `v` prefix, such as `0.0.1`.
@@ -50,7 +101,7 @@ Use Conventional Commits in changes merged to a release branch:
 
 No version field, Git tag, or release needs to be created manually. `make docker-build` derives its image tag from the latest semantic Git tag; for example, Git tag `0.0.2` produces `tileserver:0.0.2`. Before the first release, it uses `tileserver:0.0.0`.
 
-Each new release also builds and pushes `ghcr.io/muhamadanjar/tileserver:<version>` and `ghcr.io/muhamadanjar/tileserver:latest`. The workflow checks out the shared `muhamadanjar/service_auth` library; if that repository is private, configure a `SERVICE_AUTH_TOKEN` repository secret with read access to it.
+Each new release also builds and pushes `ghcr.io/muhamadanjar/tileserver:<version>` and `ghcr.io/muhamadanjar/tileserver:latest`. The production image installs the pinned public `muhamadanjar/service_auth` revision over Git HTTPS.
 
 Build the current image locally with:
 

@@ -12,6 +12,9 @@ class TilingProcessError(TileServerException):
         self.message = f"Error during tiling process: {detail}"
         super().__init__(self.message)
 
+class TilingCancelled(Exception):
+    """Raised to abort an in-progress tiling job cooperatively."""
+
 class FileSaveError(TileServerException):
     def __init__(self, detail: str):
         self.message = f"Failed to save file: {detail}"
@@ -51,6 +54,13 @@ class LayerNotFoundError(TileServerException):
 class LayerFieldsUnavailableError(TileServerException):
     def __init__(self, layer_type: str, reason: str = None):
         self.message = reason or f"Fields not available for layer type '{layer_type}'."
+        super().__init__(self.message)
+
+
+class LayerSourceUnavailableError(TileServerException):
+    """The layer source exists in metadata but cannot be materialized."""
+    def __init__(self, detail: str = "Source layer tidak dapat diakses."):
+        self.message = detail
         super().__init__(self.message)
 
 
