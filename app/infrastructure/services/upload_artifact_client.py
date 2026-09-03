@@ -65,14 +65,14 @@ class UploadArtifactClient:
     @property
     def headers(self) -> dict[str, str]:
         if self._oauth:
-            return self._oauth.authorization_header()
+            return {**self._oauth.authorization_header(), "X-Upload-Internal-Client": "true"}
         record_auth_event(
             "legacy_static_token",
             outcome="used",
             caller_service="tileserver-api",
             resource_service="upload-api",
         )
-        return {"Authorization": f"Bearer {self.legacy_token}"}
+        return {"Authorization": f"Bearer {self.legacy_token}", "X-Upload-Internal-Client": "true"}
 
     def acquire_lease(self, artifact_id: str, grant_id: str, reference: str) -> dict:
         response = requests.put(

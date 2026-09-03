@@ -18,6 +18,9 @@ x-app-service: &app-service
   environment: *app-environment
   extra_hosts:
     - host.docker.internal:host-gateway
+  networks:
+    - default
+    - usermanagement_network
   volumes:
     - tileserver-data:/app/data
     - tileserver-logs:/app/logs
@@ -139,3 +142,8 @@ volumes:
   rabbitmq-data:
   redis-data:
   geoserver-data:
+
+networks:
+  usermanagement_network:
+    external: true
+    name: ${STORAGE_NETWORK_NAME:-usermanagement_api_usermanagement_network}
