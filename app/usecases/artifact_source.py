@@ -1,6 +1,8 @@
 """Temporary, authorized local access to an Upload API artifact source."""
 
 import asyncio
+import os
+import shutil
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,10 +26,19 @@ async def artifact_source_context(
         path = Path(final_path)
         yield path if path.exists() else None
         return
+    artifact_id = final_path.removeprefix("artifact://")
+    # ponytail: cache local dulu seperti getinfo_layer._source_context; add when
+    # cache eviction/per-tenant isolation dibutuhkan
+    cache_dir = Path(os.getenv("ARTIFACT_CACHE_DIR", "/app/data/artifacts"))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached = cache_dir / f"{artifact_id}{Path(filename or 'source').suffix}"
+    if cached.exists():
+        yield cached
+        return
+
     if not authorization:
         raise PermissionError("Authorization is required to read an artifact-backed layer source")
 
-    artifact_id = final_path.removeprefix("artifact://")
     client = UploadArtifactClient()
     grant_id = await asyncio.to_thread(client.create_user_grant, artifact_id, authorization)
     lease = await asyncio.to_thread(
@@ -39,7 +50,11 @@ async def artifact_source_context(
     lease_id = str(lease["lease_id"])
     try:
         with client.materialize(artifact_id, filename or "artifact.bin") as source:
-            yield source
+            try:
+                shutil.copyfile(source, cached)
+            except Exception:
+                pass  # gagal cache tidak boleh menyembunyikan hasil source
+            yield cached if cached.exists() else source
     finally:
         try:
             await asyncio.to_thread(client.release_lease, artifact_id, lease_id)

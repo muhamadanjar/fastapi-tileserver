@@ -48,6 +48,7 @@ class UploadArtifactClient:
                 oauth_scopes,
             )
         elif self.legacy_token:
+            print("pake legacy")
             logging.getLogger(__name__).warning(
                 "DEPRECATED UPLOAD_API_SERVICE_TOKEN is in use; configure OAuth client credentials"
             )
@@ -95,6 +96,7 @@ class UploadArtifactClient:
             json={"consumer": "tileserver-api"},
             timeout=15,
         )
+      
         if response.status_code >= 400:
             raise UploadArtifactClientError(response.text[:500])
         grant_id = response.json().get("grant_id")
