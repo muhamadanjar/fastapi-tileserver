@@ -4,15 +4,15 @@ import shutil
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Optional
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 import uuid
 from defusedxml.ElementTree import fromstring as safe_fromstring, ParseError as SafeParseError
 
-from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse, LayerLegendResponse, SyncBBoxRequest
+from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse, LayerLegendResponse, SyncBBoxRequest, ForwardGeocodeResponse, ReverseGeocodeResponse
 from app.domain.models import Layer, JobStatus
 from app.infrastructure.db.connection import db, get_async_session
-from app.infrastructure.db.repository import LayerRepository, ProjectRepository, UploadSessionRepository
+from app.infrastructure.db.repository import LayerRepository, ProjectRepository, UploadSessionRepository, FeatureRepository
 from app.infrastructure.services.csw_sync import sync_layer, delete_layer_from_csw
 from app.infrastructure.services.geoserver_service import GeoServerService, GeoServerStyleError
 from app.infrastructure.services.sld_builder import build_sld, ALLOWED_GEOMETRIES
@@ -24,8 +24,10 @@ from app.workers.tasks import process_tiling_task, download_esri_layer_task
 from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError, LayerSourceUnavailableError
 from app.usecases.getinfo_layer import QueryLayerFeaturesUseCase
 from app.usecases.get_layer_fields import GetLayerFieldsUseCase
+from app.usecases.get_layer_legend import GetLayerLegendUseCase
 from app.usecases.get_field_unique_values import GetFieldUniqueValuesUseCase
 from app.usecases.get_features_in_bbox import GetFeaturesInBboxUseCase
+from app.usecases.geocoding import GeocodingUseCase, LayerNotGeocodableError
 from app.usecases.artifact_source import artifact_source_context
 from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
 
@@ -102,66 +104,9 @@ def _get_session_repo(session=Depends(get_async_session)) -> UploadSessionReposi
     return UploadSessionRepository(session)
 
 
-_ESRI_LEGEND_TYPES = {"esri_mapserver", "esri_imageserver"}
+def _get_feature_repo(session=Depends(get_async_session)) -> FeatureRepository:
+    return FeatureRepository(session)
 
-
-def _legend_response(layer: Layer) -> LayerLegendResponse:
-    """Return the upstream-native legend location for a layer when available."""
-    metadata = layer.file_metadata or {}
-
-    if layer.layer_type == "wms":
-        layer_name = (metadata.get("geoserver") or {}).get("layer_name")
-        layer_name = layer_name or metadata.get("layers") or metadata.get("layer")
-        if not layer_name:
-            return LayerLegendResponse(
-                layer_id=layer.id,
-                layer_type=layer.layer_type,
-                available=False,
-                detail="WMS layer name is not configured",
-            )
-        parts = urlsplit(layer.tile_url_template)
-        query = dict(parse_qsl(parts.query, keep_blank_values=True))
-        query.update({
-            "service": "WMS",
-            "request": "GetLegendGraphic",
-            "version": "1.3.0",
-            "layer": layer_name,
-            "format": "image/png",
-        })
-        return LayerLegendResponse(
-            layer_id=layer.id,
-            layer_type=layer.layer_type,
-            available=True,
-            legend_url=urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), "")),
-            format="image/png",
-        )
-
-    if layer.layer_type in _ESRI_LEGEND_TYPES:
-        parts = urlsplit(layer.tile_url_template.rstrip("/"))
-        service_name = "MapServer" if layer.layer_type == "esri_mapserver" else "ImageServer"
-        marker = f"/{service_name}"
-        service_path, separator, _ = parts.path.partition(marker)
-        if not parts.scheme or not parts.netloc or not separator:
-            return LayerLegendResponse(
-                layer_id=layer.id,
-                layer_type=layer.layer_type,
-                available=False,
-                detail=f"Layer does not point to an Esri {service_name} service",
-            )
-        return LayerLegendResponse(
-            layer_id=layer.id,
-            layer_type=layer.layer_type,
-            available=True,
-            legend_url=urlunsplit((parts.scheme, parts.netloc, f"{service_path}{marker}/legend", "f=pjson", "")),
-            format="application/json",
-        )
-
-    return LayerLegendResponse(
-        layer_id=layer.id,
-        layer_type=layer.layer_type,
-        available=False,
-        detail=f"Layer type '{layer.layer_type}' does not expose a server-side legend",
-    )
 
 
 @router.get("")
@@ -223,11 +168,13 @@ async def list_layers(
 async def get_layer_legend(
     layer_id: str,
     repo: LayerRepository = Depends(_get_layer_repo),
+    session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
-    layer = await repo.get_by_id(layer_id)
-    if not layer:
-        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
-    return _legend_response(layer)
+    try:
+        usecase = GetLayerLegendUseCase(layer_repo=repo, session_repo=session_repo)
+        return await usecase.execute(layer_id)
+    except LayerNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.message)
 
 
 @router.get("/{layer_id}", response_model=LayerResponse)
@@ -1028,6 +975,37 @@ async def query_features(
     usecase = QueryLayerFeaturesUseCase(layer_repo, session_repo)
     try:
         return await usecase.execute(layer_id, lon, lat, authorization=authorization)
+    except LayerSourceUnavailableError as exc:
+        raise HTTPException(status_code=424, detail=exc.message)
+
+
+@router.get("/{layer_id}/geocoding", response_model=None)
+async def geocoding(
+    layer_id: str,
+    feature_index: Optional[int] = Query(default=None, ge=0, description="Reverse: 0-based row index of the feature to address"),
+    text: Optional[str] = Query(default=None, description="Forward: free-form place/address search text"),
+    radius: float = Query(default=500, gt=0, le=50_000, description="Forward: search radius in meters around the geocoded point"),
+    limit: int = Query(default=20, ge=1, le=100, description="Forward: max nearby features to return"),
+    authorization: Optional[str] = Header(default=None),
+    layer_repo: LayerRepository = Depends(_get_layer_repo),
+    session_repo: UploadSessionRepository = Depends(_get_session_repo),
+    feature_repo: FeatureRepository = Depends(_get_feature_repo),
+):
+    usecase = GeocodingUseCase(layer_repo, session_repo, feature_repo)
+    try:
+        if feature_index is not None:
+            if text is not None:
+                raise HTTPException(status_code=422, detail="Provide either feature_index (reverse) or text (forward), not both")
+            return await usecase.reverse_feature(layer_id, feature_index, authorization=authorization)
+        if not text:
+            raise HTTPException(status_code=422, detail="Provide 'feature_index' for reverse geocoding or 'text' for forward geocoding")
+        return await usecase.forward_layer(layer_id, text, radius_m=radius, limit=limit, authorization=authorization)
+    except LayerNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=exc.message)
+    except LayerNotGeocodableError as exc:
+        raise HTTPException(status_code=422, detail=exc.message)
+    except IndexError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     except LayerSourceUnavailableError as exc:
         raise HTTPException(status_code=424, detail=exc.message)
 

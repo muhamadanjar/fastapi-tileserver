@@ -56,7 +56,7 @@ COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
 
-RUN mkdir --parents /app/data /app/logs \
+RUN mkdir --parents /app/data/tiles /app/data/download /app/data/attachments /app/data/mbtiles /app/data/uploads /app/data/chunks /app/data/esri_cache /app/logs \
     && chown --recursive tileserver:tileserver /app/data /app/logs
 
 USER tileserver

@@ -342,3 +342,49 @@ class PublishResponse(BaseModel):
     project_id: str
     layer_id: str
     geojson_url: str
+
+
+# --- Geocoding ---
+
+class GeocodeHit(BaseModel):
+    """One Nominatim result — used both as forward geocoding target and as reverse output."""
+    display_name: str
+    lon: float
+    lat: float
+    address: Optional[dict] = None
+
+
+class ReverseGeocodeResponse(BaseModel):
+    feature_index: int
+    longitude: float
+    latitude: float
+    address: Optional[GeocodeHit] = None
+
+
+class ForwardMatch(BaseModel):
+    feature_index: int
+    distance_m: float
+    properties: dict = {}
+    longitude: Optional[float] = None
+    latitude: Optional[float] = None
+
+
+class ForwardGeocodeResponse(BaseModel):
+    layer_id: Optional[str] = None
+    text: str
+    geocoded: Optional[GeocodeHit] = None
+    count: int
+    matches: list[ForwardMatch] = []
+
+
+class GlobalGeocodeLayerResult(BaseModel):
+    layer_id: str
+    layer_name: str
+    count: int
+    matches: list[ForwardMatch] = []
+
+
+class GlobalGeocodeResponse(BaseModel):
+    text: str
+    geocoded: Optional[GeocodeHit] = None
+    layers: list[GlobalGeocodeLayerResult] = []

@@ -10,6 +10,7 @@ from app.presentation.middleware.auth_middleware import JWTAuthenticationMiddlew
 from app.api.v1.api import api_router
 from app.api.v1.endpoints.mvt import router as mvt_router
 from app.infrastructure.db.connection import db
+from app.infrastructure.health import check_all_infrastructure
 
 _csw_logger = logging.getLogger("app.csw_init")
 
@@ -73,9 +74,5 @@ def root():
 
 @app.get("/health")
 async def health_check() -> dict:
-    db_ok = await db.health_check()
-    return {
-        "status": "healthy" if db_ok else "unhealthy",
-        "database": "connected" if db_ok else "disconnected",
-        "service": "tileserver_api",
-    }
+    """Health check endpoint - verifies database, Redis, and RabbitMQ connectivity."""
+    return await check_all_infrastructure()

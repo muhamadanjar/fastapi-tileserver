@@ -61,3 +61,7 @@ GeoServer holds the *rendering truth* (the SLD actually applied). The database h
 ## Default Style (GeoServer sense)
 
 The style GeoServer applies to GetMap requests when none is named. Our per-Layer style is always installed as the Layer's Default Style, so existing WMS URLs keep working unchanged.
+
+## Geocoding (of a Feature)
+
+Resolving an address from a Feature's coordinates (reverse) or finding Features near a place name (forward), via an external geocoder (Nominatim/OSM). Reverse targets a single Feature identified by its 0-based row index within the Layer. Forward returns the nearest Features within a radius, sorted by great-circle distance; non-point geometries are represented by a single representative point for distance and addressing.

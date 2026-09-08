@@ -83,6 +83,11 @@ class Settings(BaseSettings):
     # Upload session expiry in hours (default 24)
     UPLOAD_SESSION_EXPIRE_HOURS: int = Field(default=24, env="UPLOAD_SESSION_EXPIRE_HOURS")
 
+    # Geocoding (Nominatim / OSM)
+    NOMINATIM_URL: str = Field(default="https://nominatim.openstreetmap.org", env="NOMINATIM_URL")
+    NOMINATIM_TIMEOUT: int = Field(default=10, env="NOMINATIM_TIMEOUT")
+    NOMINATIM_USER_AGENT: str = Field(default="tileserver-api", env="NOMINATIM_USER_AGENT")
+
     # CORS
     CORS_ALLOWED_ORIGINS: str = Field(default="*", env="CORS_ALLOWED_ORIGINS")
     CORS_ALLOWED_METHODS: str = Field(default="*", env="CORS_ALLOWED_METHODS")
