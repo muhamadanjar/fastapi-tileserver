@@ -121,6 +121,19 @@ class GeometryType(str, enum.Enum):
     polygon = "polygon"
 
 
+class OverlayOperation(str, enum.Enum):
+    intersection = "intersection"
+    union = "union"
+    dissolve = "dissolve"
+    clip = "clip"
+    difference = "difference"
+    buffer = "buffer"
+    sym_difference = "sym_difference"
+    simplify = "simplify"
+    spatial_join = "spatial_join"
+    centroid = "centroid"
+
+
 class Project(SQLModel, table=True):
     __tablename__ = "projects"
 
@@ -142,6 +155,31 @@ class Feature(SQLModel, table=True):
     geometry: Dict[str, Any] = Field(sa_column=Column(JSON))
     attributes: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_by: Optional[str] = Field(default=None)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
+
+
+class AnalysisResult(SQLModel, table=True):
+    __tablename__ = "analysis_results"
+
+    id: str = Field(primary_key=True)
+    layer_id: str = Field(foreign_key="layers.id", index=True)
+    operation: str  # OverlayOperation value
+    input_layer_a_id: str
+    input_layer_b_id: Optional[str] = None
+    output_name: Optional[str] = None
+    feature_count: int = Field(default=0)
+    skipped_null_geometry: int = Field(default=0)
+    warning: Optional[str] = Field(default=None, sa_column=Column(Text()))
+    result_file_path: Optional[str] = None
+    ephemeral: bool = Field(default=True)
+    status: str = Field(default="done")  # pending|processing|done|failed
+    celery_task_id: Optional[str] = Field(default=None)
+    error_message: Optional[str] = Field(default=None, sa_column=Column(Text()))
+    bbox_west: Optional[float] = Field(default=None)
+    bbox_south: Optional[float] = Field(default=None)
+    bbox_east: Optional[float] = Field(default=None)
+    bbox_north: Optional[float] = Field(default=None)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True)))
 

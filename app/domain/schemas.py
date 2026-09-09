@@ -344,6 +344,87 @@ class PublishResponse(BaseModel):
     geojson_url: str
 
 
+# --- Overlay Analysis ---
+
+class AnalysisRequest(BaseModel):
+    operation: str  # OverlayOperation value
+    input_layer_a_id: str
+    input_layer_b_id: Optional[str] = None
+    output_name: Optional[str] = None
+    selected_attributes: Optional[Dict[str, list[str]]] = None
+    buffer_distance: Optional[float] = None
+    buffer_unit: Optional[str] = "meters"  # meters|kilometers|feet|miles
+    dissolve_group_by: Optional[str] = None
+    simplify_tolerance: Optional[float] = None  # simplify: tolerance in geometry units
+    join_predicate: Optional[str] = "intersects"  # spatial_join: intersects|within|contains|touches|crosses|overlaps
+    async_run: bool = False  # execute via Celery worker
+
+
+class AnalysisResponse(BaseModel):
+    result_layer_id: str
+    operation: str
+    feature_count: int
+    skipped_null_geometry: int = 0
+    warning: Optional[str] = None
+    bbox: Optional[list[float]] = None
+    geojson_url: str
+    async_task_id: Optional[str] = None
+
+
+class AnalysisStatusResponse(BaseModel):
+    result_id: str
+    result_layer_id: str
+    status: str  # pending|processing|done|failed
+    operation: str
+    feature_count: int = 0
+    warning: Optional[str] = None
+    error_message: Optional[str] = None
+    bbox: Optional[list[float]] = None
+    geojson_url: Optional[str] = None
+
+
+class OperationInfo(BaseModel):
+    name: str
+    display_name: str
+    description: str
+    requires_second_layer: bool
+    compatible_geometry: Dict[str, list[str]]  # input_a geometry types -> compatible input_b types
+    output_geometry: str
+    phase: int = 1
+    optional_params: list[str] = []
+
+
+class LayerAnalysisSource(BaseModel):
+    layer_id: str
+    filename: str
+    layer_type: str
+    geometry_type: str
+    feature_count: Optional[int] = None
+    bbox: Optional[list[float]] = None
+    fields: list[str] = []
+
+
+class ValidateAnalysisResponse(BaseModel):
+    valid: bool
+    errors: list[str] = []
+    warnings: list[str] = []
+    layer_a_geometry: Optional[str] = None
+    layer_b_geometry: Optional[str] = None
+    compatible_operations: list[str] = []
+
+
+class AnalysisSaveResponse(BaseModel):
+    result_layer_id: str
+    layer_id: str
+    message: str
+
+
+class AnalysisDownloadResponse(BaseModel):
+    download_url: str
+    format: str
+    filename: str
+
+
 # --- Geocoding ---
 
 class GeocodeHit(BaseModel):

@@ -742,3 +742,54 @@ def estimate_esri_download_task(
             SyncLayerRepository(session).update_download_progress(
                 layer_id, {"status": "failed", "task_id": self.request.id, "error": str(exc)})
         raise self.retry(exc=exc, countdown=5)
+
+
+def _make_analysis_usecase(session):
+    """Create OverlayAnalysisUseCase bound to a sync session."""
+    from sqlmodel import select as _sel
+    from app.core.config import settings as _settings
+    from app.domain.models import Feature as _Feature
+    from app.infrastructure.db.repository import (
+        SyncLayerRepository as _SLR,
+        SyncAnalysisResultRepository as _SAR,
+        SyncUploadSessionRepository as _SUR,
+    )
+    from app.infrastructure.services.analysis_export import AnalysisExportService as _AES
+    from app.usecases.overlay_analysis import OverlayAnalysisUseCase as _UC
+
+    def _get_features(project_id: str) -> list[_Feature]:
+        return list(session.exec(_sel(_Feature).where(_Feature.project_id == project_id)).all())
+
+    return _UC(
+        layer_repo=_SLR(session),
+        analysis_repo=_SAR(session),
+        upload_repo=_SUR(session),
+        get_project_features_fn=_get_features,
+        export_service=_AES(_settings.UPLOAD_DIR),
+        task_enqueuer=None,  # not needed for worker execution
+        ephemeral_ttl_hours=_settings.ANALYSIS_EPHEMERAL_TTL_HOURS,
+    )
+
+
+@celery_app.task(bind=True, max_retries=1)
+def run_analysis_task(self, request: dict, result_id: str, layer_id: str,
+                      analysis_result_id: str):
+    """Execute an overlay analysis that was queued asynchronously."""
+    try:
+        with db.get_session() as session:
+            usecase = _make_analysis_usecase(session)
+            usecase.execute_pending_analysis(request, result_id, layer_id, analysis_result_id)
+        print(f"[analysis] {analysis_result_id} done")
+    except Exception as exc:
+        print(f"[analysis] {analysis_result_id} failed: {exc}")
+        raise self.retry(exc=exc, countdown=5)
+
+
+@celery_app.task(bind=True, max_retries=1)
+def cleanup_analysis_ephemeral_task(self, ttl_hours: int | None = None):
+    """Periodic/one-off cleanup of abandoned ephemeral analysis layers."""
+    with db.get_session() as session:
+        usecase = _make_analysis_usecase(session)
+        result = usecase.cleanup_ephemeral(ttl_hours=ttl_hours)
+    print(f"[analysis] cleanup: {result}")
+    return result

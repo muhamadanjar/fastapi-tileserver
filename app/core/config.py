@@ -83,6 +83,14 @@ class Settings(BaseSettings):
     # Upload session expiry in hours (default 24)
     UPLOAD_SESSION_EXPIRE_HOURS: int = Field(default=24, env="UPLOAD_SESSION_EXPIRE_HOURS")
 
+    # Overlay analysis
+    ANALYSIS_ASYNC_THRESHOLD: int = Field(
+        default=100_000, env="ANALYSIS_ASYNC_THRESHOLD"
+    )
+    ANALYSIS_EPHEMERAL_TTL_HOURS: int = Field(
+        default=24, env="ANALYSIS_EPHEMERAL_TTL_HOURS"
+    )
+
     # Geocoding (Nominatim / OSM)
     NOMINATIM_URL: str = Field(default="https://nominatim.openstreetmap.org", env="NOMINATIM_URL")
     NOMINATIM_TIMEOUT: int = Field(default=10, env="NOMINATIM_TIMEOUT")

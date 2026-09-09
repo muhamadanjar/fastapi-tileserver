@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import attributes as _sa_attrs
 from sqlmodel import Session
 
-from app.domain.models import UploadSession, Layer, JobStatus, ImportStatus, Project, Feature, Attachment
+from app.domain.models import UploadSession, Layer, JobStatus, ImportStatus, Project, Feature, Attachment, AnalysisResult
 from sqlalchemy.orm import attributes
 from app.core.exceptions import SessionNotFoundError
 
@@ -269,32 +269,23 @@ class SyncLayerRepository:
             return layer.file_metadata.get("download_process")
         return None
 
-    def code_exists(self, code: str) -> bool:
-        result = self.session.exec(
-            select(Layer).where(Layer.code == code)
-        )
-        return result.first() is not None
-
     def update_mbtiles(self, layer_id: str, *, status: str,
-                       progress: Optional[dict] = None,
-                       path: Optional[str] = None,
-                       size_bytes: Optional[int] = None) -> None:
+                       mbtiles_path: Optional[str] = None,
+                       mbtiles_size_bytes: Optional[int] = None) -> None:
         layer = self.get_by_id(layer_id)
-        if not layer:
-            return
-        meta = dict(layer.file_metadata or {})
-        meta["mbtiles"] = {**(meta.get("mbtiles") or {}),
-                           **(progress or {}), "status": status}
-        layer.file_metadata = meta
-        _sa_attrs.flag_modified(layer, "file_metadata")
-        layer.mbtiles_status = status
-        if path is not None:
-            layer.mbtiles_path = path
-        if size_bytes is not None:
-            layer.mbtiles_size_bytes = size_bytes
-        layer.updated_at = datetime.now(timezone.utc)
-        self.session.add(layer)
-        self.session.commit()
+        if layer:
+            layer.mbtiles_status = status
+            if mbtiles_path is not None:
+                layer.mbtiles_path = mbtiles_path
+            if mbtiles_size_bytes is not None:
+                layer.mbtiles_size_bytes = mbtiles_size_bytes
+            layer.updated_at = datetime.now(timezone.utc)
+            self.session.add(layer)
+            self.session.commit()
+
+    def list_all(self) -> list[Layer]:
+        result = self.session.exec(select(Layer))
+        return list(result.all())
 
 
 class LayerRepository:
@@ -591,3 +582,43 @@ class AttachmentRepository:
         await self.session.delete(attachment)
         await self.session.commit()
         return True
+
+
+class SyncAnalysisResultRepository:
+    """Synchronous repository for overlay analysis results (worker + sync usecase)."""
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    def get_by_id(self, result_id: str) -> Optional[AnalysisResult]:
+        return self.session.exec(
+            select(AnalysisResult).where(AnalysisResult.id == result_id)
+        ).first()
+
+    def get_by_layer_id(self, layer_id: str) -> Optional[AnalysisResult]:
+        return self.session.exec(
+            select(AnalysisResult).where(AnalysisResult.layer_id == layer_id)
+        ).first()
+
+    def create(self, result: AnalysisResult) -> AnalysisResult:
+        self.session.add(result)
+        self.session.commit()
+        self.session.refresh(result)
+        return result
+
+    def update(self, result: AnalysisResult) -> None:
+        result.updated_at = datetime.now(timezone.utc)
+        self.session.add(result)
+        self.session.commit()
+
+    def delete(self, result: AnalysisResult) -> None:
+        self.session.delete(result)
+        self.session.commit()
+
+    def list_expired_ephemeral(self, cutoff) -> list[AnalysisResult]:
+        return list(self.session.exec(
+            select(AnalysisResult).where(
+                AnalysisResult.ephemeral == True,  # noqa: E712
+                AnalysisResult.created_at < cutoff,
+            )
+        ).all())

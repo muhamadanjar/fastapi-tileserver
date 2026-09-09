@@ -65,3 +65,19 @@ The style GeoServer applies to GetMap requests when none is named. Our per-Layer
 ## Geocoding (of a Feature)
 
 Resolving an address from a Feature's coordinates (reverse) or finding Features near a place name (forward), via an external geocoder (Nominatim/OSM). Reverse targets a single Feature identified by its 0-based row index within the Layer. Forward returns the nearest Features within a radius, sorted by great-circle distance; non-point geometries are represented by a single representative point for distance and addressing.
+
+## Overlay Analysis
+
+Spatial operation performed on two (or one) vector layers to produce a new geometry result. Supported operations in Phase 1: Intersection, Union, Dissolve, Clip, Difference, Buffer. Each operation has geometry-type compatibility rules — incompatible operations are disabled for a given input pair. The result is an ephemeral Layer that appears on the map; the user may choose to persist it or discard it.
+
+## Overlay Operation
+
+A specific spatial analysis function applied to input layers. Each operation defines: required input count (1 or 2), compatible geometry types for each input, and the geometry type of the output. Operations are divided into Phase 1 (core) and Phase 2 (extended).
+
+## Ephemeral Layer
+
+A Layer created by overlay analysis that exists temporarily on the map. It has a GeoJSON result file on disk and a Layer record in the database, but is flagged as ephemeral in `file_metadata.analysis.ephemeral`. The user may persist it (removing the ephemeral flag) or discard it (deleting both file and record).
+
+## Dissolve (spatial)
+
+Merging features within a single layer into fewer or one geometry. Full dissolve merges all features into one. Group-by dissolve merges features that share the same attribute value, producing one geometry per unique value.
