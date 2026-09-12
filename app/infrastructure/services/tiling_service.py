@@ -5,6 +5,7 @@ matplotlib.use('Agg') # Use non-interactive backend
 import matplotlib.pyplot as plt
 import geopandas as gpd
 import mercantile
+from shapely import force_2d
 from shapely.geometry import box
 from pathlib import Path
 from typing import Union, Dict, Optional, Tuple, Callable
@@ -30,6 +31,15 @@ def _count_tiles_total(west: float, south: float, east: float, north: float,
     )
 
 
+def _force_2d_geometries(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Discard Z/M ordinates from derived web-map geometry, not the source file."""
+    normalized = gdf.copy()
+    normalized.geometry = normalized.geometry.map(
+        lambda geometry: force_2d(geometry) if geometry is not None else None
+    )
+    return normalized
+
+
 class VectorTiler:
     def __init__(self, source_path: str, output_dir: Path, min_zoom=0, max_zoom=None, style: Optional[Dict] = None):
         self.source_path = source_path
@@ -47,6 +57,8 @@ class VectorTiler:
 
             if self.gdf.crs != "EPSG:3857":
                 self.gdf = self.gdf.to_crs(epsg=3857)
+
+            self.gdf = _force_2d_geometries(self.gdf)
 
             self.sindex = self.gdf.sindex
         except Exception as e:
@@ -212,6 +224,8 @@ class MVTTiler:
 
             if self.gdf.crs != "EPSG:3857":
                 self.gdf = self.gdf.to_crs(epsg=3857)
+
+            self.gdf = _force_2d_geometries(self.gdf)
 
             self.sindex = self.gdf.sindex
         except Exception as e:

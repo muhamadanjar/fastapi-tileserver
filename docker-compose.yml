@@ -57,6 +57,19 @@ services:
       - tileserver-dev-logs:/app/logs
       - ${UPLOAD_API_STORAGE_PATH:-../upload_api/storage}:/app/data/upload-artifacts:ro
 
+  tileserver-beat-dev:
+    <<: *app-service
+    profiles: [development]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: dev
+    command: celery -A app.workers.celery_app beat --loglevel=INFO
+    volumes:
+      - ./:/app
+      - tileserver-dev-data:/app/data
+      - tileserver-dev-logs:/app/logs
+
   tileserver:
     <<: *app-service
     profiles: [production]
@@ -79,6 +92,17 @@ services:
       args:
         VERSION: ${VERSION:-0.0.0}
     command: celery -A app.workers.celery_app worker --loglevel=INFO --queues=tileserver
+
+  tileserver-beat:
+    <<: *app-service
+    profiles: [production]
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: production
+      args:
+        VERSION: ${VERSION:-0.0.0}
+    command: celery -A app.workers.celery_app beat --loglevel=INFO
 
   postgres:
     profiles: [infrastructure]

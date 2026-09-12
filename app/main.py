@@ -7,8 +7,8 @@ from fastapi.staticfiles import StaticFiles
 
 from app.core.config import settings
 from app.presentation.middleware.auth_middleware import JWTAuthenticationMiddleware
-from app.api.v1.api import api_router
-from app.api.v1.endpoints.mvt import router as mvt_router
+from app.presentation.router.api.v1.api import api_router
+from app.presentation.router.api.v1.endpoints.mvt import router as mvt_router
 from app.infrastructure.db.connection import db
 from app.infrastructure.health import check_all_infrastructure
 

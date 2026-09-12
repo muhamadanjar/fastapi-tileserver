@@ -44,7 +44,10 @@ class ArtifactTilingRequest(BaseModel):
     artifact_id: str = Field(min_length=36, max_length=36)
     grant_id: str = Field(min_length=36, max_length=36)
     handoff_id: str = Field(min_length=8, max_length=255)
-    output_format: Literal["raster", "mvt"] = "raster"
+    # `batch` only stages an archive for ZIP inspection; its final output is
+    # selected later by the batch configure endpoint.
+    workflow: Literal["layer", "batch"] = "layer"
+    output_format: Optional[Literal["raster", "mvt"]] = None
     max_zoom: Optional[int] = None
 
 

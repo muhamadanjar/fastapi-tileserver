@@ -50,12 +50,25 @@ def _get_layer_repo(session=Depends(get_async_session)) -> LayerRepository:
     return LayerRepository(session)
 
 
+def _artifact_handoff_output_format(body: ArtifactTilingRequest) -> str:
+    """Return the persisted legacy format without preselecting a batch output."""
+    if body.workflow == "batch":
+        if body.output_format is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="Batch artifact handoff cannot select an output format; configure the batch after inspection",
+            )
+        return "staged"
+    return body.output_format or "raster"
+
+
 @router.post("/artifact", response_model=ArtifactTilingResponse, status_code=202)
 async def create_artifact_tiling_job(
     body: ArtifactTilingRequest,
     repo: UploadSessionRepository = Depends(_get_repo),
 ):
-    """Stage an available upload_api artifact for a later tiling request."""
+    """Stage an available artifact for a later layer job or batch inspection."""
+    output_format = _artifact_handoff_output_format(body)
     existing = await repo.get_by_artifact_handoff(body.handoff_id)
     if existing:
         if existing.artifact_id != body.artifact_id:
@@ -96,7 +109,7 @@ async def create_artifact_tiling_job(
         received_bytes=artifact["size_bytes"],
         status=JobStatus.uploaded,
         final_path=f"artifact://{body.artifact_id}",
-        output_format=body.output_format,
+        output_format=output_format,
         max_zoom=body.max_zoom,
         chunk_map={},
         total_chunks=1,
