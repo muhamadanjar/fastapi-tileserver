@@ -32,6 +32,26 @@ _MAX_ARCHIVE_ENTRIES = 10_000
 _MAX_ARCHIVE_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 
 
+def _normalize_geometry_type(value: str) -> str:
+    """Map shapefile Z/M geometry labels to the 2D style families we support."""
+    base = value.strip()
+    for marker in (" ZM", " Z", " M", " 25D"):
+        if base.endswith(marker):
+            base = base[:-len(marker)].rstrip()
+            break
+    return _GEOM_MAP.get(base, base)
+
+
+def _normalize_style_geometry_keys(style: dict | None) -> dict:
+    """Make persisted pre-2D styles safe for SLD and vector-tile renderers."""
+    if not style:
+        return {}
+    return {
+        _normalize_geometry_type(str(geometry)): props
+        for geometry, props in style.items()
+    }
+
+
 def _validate_archive_member(name: str) -> None:
     """Reject ZIP member names that could escape an extraction directory."""
     path = PurePosixPath(name)
@@ -143,7 +163,7 @@ def _inspect_shp_in_zip(zip_path: Path, dataset: Dataset) -> Dataset:
             meta = pyogrio.read_info(str(shp_path))
             geom_type = meta.get("geometry_type") or "Unknown"
             # Normalize
-            dataset.geometry = _GEOM_MAP.get(str(geom_type), str(geom_type))
+            dataset.geometry = _normalize_geometry_type(str(geom_type))
             dataset.feature_count = int(meta.get("features") or 0)
 
             # Bounding box
@@ -193,6 +213,22 @@ def _style_for_tiler(style: dict) -> dict:
                 p[key] = list(_rgb(p[key]))
         out[geom] = p
     return out
+
+
+def _geoserver_layer_group_xml(name: str, layer_names: list[str]) -> bytes:
+    """Serialize a WMS group using GeoServer's single layers/styles containers."""
+    from xml.etree.ElementTree import Element, SubElement, tostring
+
+    root = Element("layerGroup")
+    SubElement(root, "name").text = name
+    SubElement(root, "mode").text = "SINGLE"
+    layers = SubElement(root, "layers")
+    styles = SubElement(root, "styles")
+    for layer_name in layer_names:
+        SubElement(layers, "layer").text = layer_name
+        # An empty style entry tells GeoServer to retain the layer default.
+        SubElement(styles, "style")
+    return tostring(root, encoding="utf-8")
 
 
 def _geom_to_paint_type(geom: str) -> str:
@@ -281,6 +317,7 @@ class FileBackedMapRenderer:
     def render(self, source: dict, batch: Batch, item: Dataset, progress: Callable[[int], None]) -> LayerData:
         """Publish one dataset to GeoServer (for WMS) or import to PostGIS."""
         zip_path = self._resolve_source_path(source)
+        style = _normalize_style_geometry_keys(item.style)
         progress(5)
 
         # Extract the specific dataset from the ZIP
@@ -314,9 +351,9 @@ class FileBackedMapRenderer:
                 progress(80)
 
                 # Apply style if provided
-                if item.style:
+                if style:
                     style_name = f"{code}_style"
-                    sld = build_sld(item.style, style_name)
+                    sld = build_sld(style, style_name)
                     gs.upsert_style(style_name, sld)
                     gs.set_default_style(result["layer_name"], style_name)
                 progress(95)
@@ -327,7 +364,7 @@ class FileBackedMapRenderer:
                     output_format="wms",
                     upload_id=batch.upload_id,
                     bbox=bbox or [0, 0, 0, 0],
-                    style=item.style,
+                    style=style,
                     metadata={"geoserver": result},
                     url=result.get("wms_url", ""),
                 )
@@ -340,7 +377,7 @@ class FileBackedMapRenderer:
                 bounds = TilingService.process_tiling(
                     file_type, extracted_shp, item.layer_id,
                     output_format=output_format,
-                    style=_style_for_tiler(item.style),
+                    style=_style_for_tiler(style),
                     progress_callback=lambda p: progress(30 + int(p.get("percent", 0) * 0.65)),
                     max_zoom=batch.max_zoom,
                 )
@@ -357,7 +394,7 @@ class FileBackedMapRenderer:
                     output_format=output_format,
                     upload_id=batch.upload_id,
                     bbox=bbox or [0, 0, 0, 0],
-                    style=item.style,
+                    style=style,
                     metadata={"tile_process": {"status": "done"}},
                     url=tile_url,
                 )
@@ -393,27 +430,20 @@ class FileBackedMapRenderer:
         # Create/update the layer group via REST API
         import requests
         group_url = f"{gs._base_url}/rest/workspaces/{workspace}/layergroups/{group.code}"
-        payload = {
-            "layerGroup": {
-                # GeoServer addresses a layer group by name. The immutable
-                # code is the public and REST identity; the display name stays
-                # in our catalog only.
-                "name": group.code,
-                "workspace": workspace,
-                "mode": "SINGLE",  # renders all layers into one combined image
-                "layers": [{"name": ln} for ln in layer_names],
-                "styles": [{} for _ in layer_names],  # use default style per layer
-            }
-        }
+        # GeoServer's JSON reader emits a duplicate <layers> field when given
+        # a list. XML is unambiguous: one <layers> container, many <layer>
+        # values, and one matching <styles> container.
+        payload = _geoserver_layer_group_xml(group.code, layer_names)
+        headers = {"Content-Type": "text/xml"}
 
         try:
             resp = requests.get(f"{group_url}.json", auth=gs._auth, timeout=15)
             if resp.status_code == 200:
-                resp = requests.put(group_url, json=payload, auth=gs._auth, timeout=30)
+                resp = requests.put(group_url, data=payload, headers=headers, auth=gs._auth, timeout=30)
             else:
                 resp = requests.post(
                     f"{gs._base_url}/rest/workspaces/{workspace}/layergroups",
-                    json=payload, auth=gs._auth, timeout=30,
+                    data=payload, headers=headers, auth=gs._auth, timeout=30,
                 )
             if resp.status_code not in (200, 201):
                 raise MapError(

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 import zipfile
+from xml.etree.ElementTree import fromstring
 
 import pytest
 
@@ -12,7 +13,9 @@ from app.domain.map_batches import Batch, Dataset, Group, LayerData, Member
 from app.infrastructure.services.map_renderer import (
     FileBackedMapRenderer,
     _detect_datasets_from_zip,
+    _geoserver_layer_group_xml,
     _group_styles_dir,
+    _normalize_geometry_type,
     _style_for_tiler,
 )
 from PIL import Image
@@ -78,6 +81,27 @@ class TestStyleForTilerGuard:
     def test_empty_style(self):
         assert _style_for_tiler({}) == {}
         assert _style_for_tiler(None) == {}  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(("geometry", "expected"), [
+    ("Point Z", "Point"),
+    ("LineString Z", "LineString"),
+    ("Polygon Z", "Polygon"),
+    ("MultiPolygon M", "Polygon"),
+    ("MultiPoint ZM", "Point"),
+])
+def test_normalize_geometry_type_discards_dimension_markers(geometry, expected):
+    assert _normalize_geometry_type(geometry) == expected
+
+
+def test_geoserver_layer_group_xml_has_single_layer_and_style_containers():
+    document = fromstring(_geoserver_layer_group_xml("rencana", ["ws:point", "ws:line", "ws:polygon"]))
+
+    assert document.tag == "layerGroup"
+    assert [node.text for node in document.findall("./layers/layer")] == ["ws:point", "ws:line", "ws:polygon"]
+    assert len(document.findall("./layers")) == 1
+    assert len(document.findall("./styles")) == 1
+    assert len(document.findall("./styles/style")) == 3
 
 
 # ---------------------------------------------------------------------------
