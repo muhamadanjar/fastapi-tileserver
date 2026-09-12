@@ -24,4 +24,10 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     broker_connection_retry=True,
     broker_connection_max_retries=10,
+    beat_schedule={
+        "reconcile-pending-artifact-releases": {
+            "task": "app.workers.tasks.reconcile_pending_release_task",
+            "schedule": 300.0,
+        },
+    },
 )

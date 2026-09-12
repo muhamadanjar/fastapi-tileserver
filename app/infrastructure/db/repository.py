@@ -28,6 +28,25 @@ class UploadSessionRepository:
         )
         return result.scalars().first()
 
+    async def count_layers_referencing(self, upload_id: str) -> int:
+        """Count layers that still reference this upload session."""
+        result = await self.session.execute(
+            select(func.count()).select_from(Layer).where(Layer.upload_session_id == upload_id)
+        )
+        return result.one()[0]
+
+    async def count_batches_referencing(self, upload_id: str) -> int:
+        """Count batches (non-terminal) that still reference this upload session."""
+        from app.domain.models import BatchRecord
+        terminal = ("done", "cancelled", "failed", "inspection_failed")
+        result = await self.session.execute(
+            select(func.count()).select_from(BatchRecord).where(
+                BatchRecord.upload_id == upload_id,
+                BatchRecord.status.notin_(terminal),
+            )
+        )
+        return result.one()[0]
+
     async def get_by_artifact_handoff(self, handoff_id: str) -> Optional[UploadSession]:
         result = await self.session.execute(
             select(UploadSession).where(UploadSession.artifact_handoff_id == handoff_id)
@@ -164,6 +183,23 @@ class SyncUploadSessionRepository:
         )
         return result.first()
 
+    def count_layers_referencing(self, upload_id: str) -> int:
+        """Count layers that still reference this upload session."""
+        return self.session.exec(
+            select(func.count()).select_from(Layer).where(Layer.upload_session_id == upload_id)
+        ).one()[0]
+
+    def count_batches_referencing(self, upload_id: str) -> int:
+        """Count batches (non-terminal) that still reference this upload session."""
+        from app.domain.models import BatchRecord
+        terminal = ("done", "cancelled", "failed", "inspection_failed")
+        return self.session.exec(
+            select(func.count()).select_from(BatchRecord).where(
+                BatchRecord.upload_id == upload_id,
+                BatchRecord.status.notin_(terminal),
+            )
+        ).one()[0]
+
     def set_status(
         self, upload_id: str, status: JobStatus, error_message: Optional[str] = None
     ) -> None:
@@ -286,6 +322,15 @@ class SyncLayerRepository:
     def list_all(self) -> list[Layer]:
         result = self.session.exec(select(Layer))
         return list(result.all())
+
+    def code_exists(self, code: str) -> bool:
+        """Return whether a layer code is already reserved in the catalog.
+
+        The import worker creates layers synchronously and uses this callback
+        with ``generate_unique_code_sync`` before inserting a new layer.
+        """
+        result = self.session.exec(select(Layer.id).where(Layer.code == code))
+        return result.first() is not None
 
 
 class LayerRepository:
