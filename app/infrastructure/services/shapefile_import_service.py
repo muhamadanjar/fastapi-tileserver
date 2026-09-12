@@ -317,9 +317,26 @@ def _assert_postgis(engine: Engine, cursor) -> None:
     if engine.dialect.name != "postgresql":
         raise ShapefileConfigurationError("Shapefile import requires PostgreSQL with PostGIS")
     try:
+        cursor.execute(
+            "SELECT n.nspname "
+            "FROM pg_extension e "
+            "JOIN pg_namespace n ON n.oid = e.extnamespace "
+            "WHERE e.extname = 'postgis'"
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise ShapefileConfigurationError("PostGIS extension is not installed or accessible")
+        # PostGIS may be installed outside `public` (for example, in
+        # `geodata`).  Keep that setting scoped to this raw import connection
+        # so application and Alembic tables continue to use their own schema.
+        cursor.execute(
+            sql.SQL("SET search_path TO {}, public").format(sql.Identifier(row[0]))
+        )
         cursor.execute("SELECT PostGIS_Version()")
         cursor.fetchone()
     except Exception as exc:
+        if isinstance(exc, ShapefileConfigurationError):
+            raise
         raise ShapefileConfigurationError("PostGIS extension is not installed or accessible") from exc
 
 
