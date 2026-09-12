@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import tiles, upload, layers, csw, esri, projects, geocoding, analysis
+from app.presentation.router.api.v1.endpoints import tiles, upload, layers, csw, esri, projects, geocoding, analysis
 
 api_router = APIRouter()
 api_router.include_router(tiles.router, tags=["tiles"])
