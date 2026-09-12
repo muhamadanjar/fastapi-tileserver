@@ -30,6 +30,7 @@ class LayerType(str, enum.Enum):
     tile = "tile"
     mvt = "mvt"
     vector = "vector"
+    shp = "shp"
     wms = "wms"
     wfs = "wfs"
     wmts = "wmts"
