@@ -358,6 +358,12 @@ class AnalysisRequest(BaseModel):
     simplify_tolerance: Optional[float] = None  # simplify: tolerance in geometry units
     join_predicate: Optional[str] = "intersects"  # spatial_join: intersects|within|contains|touches|crosses|overlaps
     async_run: bool = False  # execute via Celery worker
+    calculate_area: bool = Field(
+        default=False,
+        description="Polygon intersection only: include per-pair area and percentages",
+    )
+    source_id_field_a: Optional[str] = Field(default=None, min_length=1)
+    source_id_field_b: Optional[str] = Field(default=None, min_length=1)
 
 
 class AnalysisResponse(BaseModel):

@@ -1,5 +1,6 @@
 """File I/O service for overlay analysis results."""
 
+import json
 import os
 import shutil
 import tempfile
@@ -30,6 +31,14 @@ class AnalysisExportService:
             parent_dir = os.path.dirname(file_path)
             if parent_dir:
                 shutil.rmtree(parent_dir, ignore_errors=True)
+
+    def save_sources(self, sources: dict, result_id: str) -> None:
+        """Keep source identities and geometries with the result's lifetime."""
+        output_dir = self.upload_dir / result_id
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "sources.json").write_text(
+            json.dumps(sources, ensure_ascii=False, allow_nan=False), encoding="utf-8",
+        )
 
     def get_geojson_path(self, file_path: str) -> Optional[Path]:
         """Return Path to existing GeoJSON result file, or None."""

@@ -84,6 +84,10 @@ def validate_overlay(
         operation=request.operation,
         layer_a_id=request.input_layer_a_id,
         layer_b_id=request.input_layer_b_id,
+        calculate_area=request.calculate_area,
+        source_id_field_a=request.source_id_field_a,
+        source_id_field_b=request.source_id_field_b,
+        selected_attributes=request.selected_attributes,
     )
     return ValidateAnalysisResponse(**result)
 
@@ -147,6 +151,13 @@ def preview_result(
     if not layer:
         raise HTTPException(status_code=404, detail="Result not found")
 
+    result = SyncAnalysisResultRepository(session).get_by_layer_id(result_layer_id)
+    if result and result.result_file_path and Path(result.result_file_path).is_file():
+        return FileResponse(
+            result.result_file_path, media_type="application/geo+json",
+            filename=f"{layer.filename}.geojson",
+        )
+
     if layer.tile_url_template and layer.tile_url_template.startswith("/data/"):
         file_path = layer.tile_url_template.lstrip("/")
         if Path(file_path).exists():
@@ -174,6 +185,21 @@ def save_result(
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.get("/{result_layer_id}/sources")
+def download_sources(
+    result_layer_id: str,
+    session: Session = Depends(get_sync_session),
+):
+    """Download execution-time source snapshots for an area intersection."""
+    result = SyncAnalysisResultRepository(session).get_by_layer_id(result_layer_id)
+    if result is None or not result.result_file_path or result.status != "done":
+        raise HTTPException(status_code=404, detail="Source snapshot not found")
+    source_file = Path(result.result_file_path).with_name("sources.json")
+    if not source_file.is_file():
+        raise HTTPException(status_code=404, detail="Source snapshot not found")
+    return FileResponse(source_file, media_type="application/json", filename="sources.json")
 
 
 @router.delete("/{result_layer_id}")

@@ -13,7 +13,15 @@ from typing import Callable, Optional, Protocol
 from uuid import uuid4
 
 import geopandas as gpd
+from shapely.geometry import shape
 
+from app.analysis.intersection_area import (
+    AREA_CRS,
+    AreaInput,
+    area_option_errors,
+    intersect_with_area,
+    prepare_area_input,
+)
 from app.analysis.geometry_compat import (
     COMPATIBILITY,
     OPERATIONS_REQUIRING_SECOND_LAYER,
@@ -58,7 +66,7 @@ OPERATIONS = {
 
 # Non-derivable metadata only; geometry compat read from geometry_compat.COMPATIBILITY
 OPERATION_META: dict[str, dict] = {
-    "intersection": {"display_name": "Intersection", "description": "Extract overlapping area between two layers", "output_geometry": "depends on input types", "phase": 1, "optional_params": []},
+    "intersection": {"display_name": "Intersection", "description": "Extract overlapping area between two layers; calculate_area adds polygon-pair measurements", "output_geometry": "depends on input types", "phase": 1, "optional_params": ["calculate_area", "source_id_field_a", "source_id_field_b"]},
     "union": {"display_name": "Union", "description": "Merge all features from both layers", "output_geometry": "same as input", "phase": 1, "optional_params": []},
     "dissolve": {"display_name": "Dissolve", "description": "Merge features within a layer into one or group by attribute", "output_geometry": "same as input", "phase": 1, "optional_params": ["dissolve_group_by"]},
     "clip": {"display_name": "Clip", "description": "Cut layer A using boundary of layer B", "output_geometry": "same as layer A", "phase": 1, "optional_params": []},
@@ -147,8 +155,33 @@ class OverlayAnalysisUseCase:
         operation: str,
         layer_a_id: str,
         layer_b_id: Optional[str] = None,
+        calculate_area: bool = False,
+        source_id_field_a: Optional[str] = None,
+        source_id_field_b: Optional[str] = None,
+        selected_attributes: Optional[dict] = None,
     ) -> dict:
         """Validate if analysis is possible. Loads layers for geometry check."""
+        area_request = {
+            "operation": operation, "input_layer_a_id": layer_a_id,
+            "input_layer_b_id": layer_b_id, "calculate_area": calculate_area,
+            "source_id_field_a": source_id_field_a,
+            "source_id_field_b": source_id_field_b,
+            "selected_attributes": selected_attributes,
+        }
+        option_errors = area_option_errors(area_request)
+        if option_errors:
+            return {"valid": False, "errors": option_errors}
+        if calculate_area:
+            try:
+                a, b = self._prepare_area_request(area_request, "validation")
+            except ValueError as exc:
+                return {"valid": False, "errors": [str(exc)]}
+            return {
+                "valid": True, "errors": [],
+                "warnings": ["An input layer has no features"] if a.source.empty or b.source.empty else [],
+                "layer_a_geometry": "polygon", "layer_b_geometry": "polygon",
+                "compatible_operations": get_compatible_operations("polygon", "polygon"),
+            }
         errors: list[str] = []
         warnings: list[str] = []
         layer_a_geometry: Optional[str] = None
@@ -221,6 +254,9 @@ class OverlayAnalysisUseCase:
             },
             "fields": list(result_gdf.columns) if not result_gdf.empty else [],
         }
+        if execution.get("area_metadata"):
+            metadata["analysis"]["area_metrics"] = execution["area_metadata"]
+            metadata["fields"] = list(result_gdf.columns)
 
         layer = Layer(
             id=layer_id,
@@ -338,9 +374,12 @@ class OverlayAnalysisUseCase:
                 result.updated_at = datetime.now(timezone.utc)
                 self.analysis_repo.update(result)
             layer = self.layer_repo.get_by_id(layer_id)
-            if layer:
+            if layer and not request.get("calculate_area"):
                 self.layer_repo.session.delete(layer)
                 self.layer_repo.session.commit()
+            # Enhanced failed runs retain their inactive placeholder because
+            # AnalysisResult.layer_id references it. Keep failure status readable
+            # without violating the FK; discard/TTL removes both together.
             raise
 
         bounds = execution["bounds"]
@@ -369,13 +408,18 @@ class OverlayAnalysisUseCase:
             layer.bbox_north = bounds[3]
             meta = dict(layer.file_metadata or {})
             meta["fields"] = list(result_gdf.columns) if not result_gdf.empty else []
+            if execution.get("area_metadata"):
+                meta["analysis"]["area_metrics"] = execution["area_metadata"]
+                meta["fields"] = list(result_gdf.columns)
             layer.file_metadata = meta
             self.layer_repo.session.add(layer)
             self.layer_repo.session.commit()
 
     def get_analysis_status(self, result_id: str) -> Optional[dict]:
-        """Return analysis result status for polling."""
+        """Poll by analysis ID or the result layer ID returned by /run."""
         result = self.analysis_repo.get_by_id(result_id)
+        if not result:
+            result = self.analysis_repo.get_by_layer_id(result_id)
         if not result:
             return None
         return {
@@ -475,7 +519,7 @@ class OverlayAnalysisUseCase:
             features = self.get_project_features_fn(project_id)
             if features:
                 records = [
-                    {"geometry": f.geometry, **(f.attributes or {}), "_feature_id": f.id}
+                    {**(f.attributes or {}), "geometry": shape(f.geometry) if f.geometry else None, "_feature_id": f.id}
                     for f in features
                 ]
                 return gpd.GeoDataFrame(records, geometry="geometry", crs="EPSG:4326")
@@ -484,6 +528,10 @@ class OverlayAnalysisUseCase:
             )
 
         if not layer.upload_session_id:
+            result = self.analysis_repo.get_by_layer_id(layer_id)
+            if result and result.status == "done" and result.result_file_path:
+                if os.path.isfile(result.result_file_path):
+                    return gpd.read_file(result.result_file_path)
             return None
 
         upload = self.upload_repo.get_by_id(layer.upload_session_id)
@@ -501,7 +549,9 @@ class OverlayAnalysisUseCase:
 
     def _quick_validate(self, request: dict) -> list[str]:
         """Cheap validation before enqueueing async work (no geometry load)."""
-        errors: list[str] = []
+        errors: list[str] = area_option_errors(request)
+        if errors:
+            return errors
         operation = request["operation"]
         if operation not in OPERATIONS:
             errors.append(f"Unknown operation: {operation}")
@@ -530,6 +580,12 @@ class OverlayAnalysisUseCase:
         """Core operation execution. Loads inputs, runs operation, saves result."""
         if result_id is None:
             result_id = f"analysis_{uuid4().hex[:16]}"
+
+        option_errors = area_option_errors(request)
+        if option_errors:
+            raise ValueError("; ".join(option_errors))
+        if request.get("calculate_area"):
+            return self._execute_area(request, result_id)
 
         operation = request["operation"]
         layer_a_id = request["input_layer_a_id"]
@@ -611,6 +667,68 @@ class OverlayAnalysisUseCase:
             "skipped_null_geometry": skipped_a + skipped_b,
             "warning": warning,
             "bounds": bounds,
+        }
+
+    def _prepare_area_request(self, request: dict, result_id: str) -> tuple[AreaInput, AreaInput]:
+        errors = self._quick_validate(request)
+        if errors:
+            raise ValueError("; ".join(errors))
+        inputs = []
+        for side in ("a", "b"):
+            layer_id = request.get(f"input_layer_{side}_id")
+            try:
+                frame = self._load_layer(layer_id)
+            except Exception as exc:
+                errors.append(f"Layer {side.upper()} cannot be loaded: {layer_id}: {exc}")
+                continue
+            if frame is None:
+                errors.append(f"Layer {side.upper()} cannot be loaded: {layer_id}")
+                continue
+            try:
+                inputs.append(prepare_area_input(
+                    frame, side, request.get(f"source_id_field_{side}"), result_id,
+                    request.get("selected_attributes"),
+                ))
+            except ValueError as exc:
+                errors.append(str(exc))
+        if errors:
+            raise ValueError("; ".join(errors))
+        return inputs[0], inputs[1]
+
+    def _execute_area(self, request: dict, result_id: str) -> dict:
+        a, b = self._prepare_area_request(request, result_id)
+        result_gdf = intersect_with_area(a, b, request.get("selected_attributes"))
+        sources = {
+            "run_id": result_id,
+            "measurement_crs": AREA_CRS,
+            "layer_a": a.snapshot(request["input_layer_a_id"]),
+            "layer_b": b.snapshot(request["input_layer_b_id"]),
+        }
+        result_file = self.export_service.save_geojson(result_gdf, result_id)
+        try:
+            self.export_service.save_sources(sources, result_id)
+        except Exception:
+            self.export_service.delete_result(result_file)
+            raise
+        return {
+            "result_id": result_id,
+            "operation": "intersection",
+            "output_name": request.get("output_name"),
+            "selected_attrs": request.get("selected_attributes"),
+            "result_file": result_file,
+            "result_gdf": result_gdf,
+            "feature_count": len(result_gdf),
+            "skipped_null_geometry": 0,
+            "warning": "Analysis produced no positive-area intersections" if result_gdf.empty else None,
+            "bounds": list(result_gdf.total_bounds) if not result_gdf.empty else [0, 0, 0, 0],
+            "area_metadata": {
+                "calculate_area": True,
+                "measurement_crs": AREA_CRS,
+                "source_id_field_a": a.id_field,
+                "source_id_field_b": b.id_field,
+                "id_scope": result_id,
+                "sources_file": "sources.json",
+            },
         }
 
     @staticmethod

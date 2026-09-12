@@ -81,3 +81,15 @@ A Layer created by overlay analysis that exists temporarily on the map. It has a
 ## Dissolve (spatial)
 
 Merging features within a single layer into fewer or one geometry. Full dissolve merges all features into one. Group-by dissolve merges features that share the same attribute value, producing one geometry per unique value.
+
+## Feature-pair Intersection (Perpotongan Pasangan Fitur)
+
+The spatial overlap between one polygon feature from Layer A and one polygon feature from Layer B, associated with both source feature identities. Its measurements include overlap area and the percentage of each source feature's full area occupied by that overlap.
+
+For polygon-area analysis, a result requires positive overlap area; contact only along an edge or at a point does not produce a result.
+
+Different feature pairs remain independent even when their overlaps cover the same area; summing pair areas does not necessarily give unique coverage.
+
+## Analysis Source Feature ID (ID Fitur Sumber Analisis)
+
+An identifier linking an analysis result to a feature in its input layer. It comes from a selected unique, non-empty source field or is assigned for one analysis run with a mapping to the source record; an assigned ID does not imply stable identity across runs.
