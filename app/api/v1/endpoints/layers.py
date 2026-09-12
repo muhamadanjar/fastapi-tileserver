@@ -20,8 +20,9 @@ from app.core.utils import slugify, generate_unique_code
 from app.core.style_utils import merge_style_state
 from app.core.response import APIResponse
 from app.core.config import settings
-from app.workers.tasks import process_tiling_task, download_esri_layer_task
+from app.workers.tasks import process_tiling_task, download_esri_layer_task, _release_artifact_lease as _release_artifact_lease_sync
 from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError, LayerSourceUnavailableError
+from app.domain.map_batches import MapError
 from app.usecases.getinfo_layer import QueryLayerFeaturesUseCase
 from app.usecases.get_layer_fields import GetLayerFieldsUseCase
 from app.usecases.get_layer_legend import GetLayerLegendUseCase
@@ -841,11 +842,32 @@ async def delete_layer(
     if not layer:
         raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
 
+    # Reject deletion of layers still referenced by layer groups.
+    from app.application.map_batches import MapBatches
+    from app.infrastructure.db.catalog import SyncStore
+    from app.infrastructure.services.map_renderer import FileBackedMapRenderer
+
+    guard = MapBatches(
+        store=SyncStore(db.get_session),
+        renderer=FileBackedMapRenderer(),
+        enqueue=lambda *args, **kwargs: None,
+    )
+    try:
+        guard.deletion_guard(layer_id)
+    except MapError as exc:
+        raise HTTPException(status_code=exc.status, detail=exc.message)
+
     # Store upload_session_id before deleting layer (FK constraint)
     upload_session_id = layer.upload_session_id
     upload_session = None
     if upload_session_id:
         upload_session = await session_repo.get_by_id(upload_session_id)
+
+    # Phase 4 retention: another layer or active batch may still reference the
+    # source. Only the final consumer may delete the upload session + file.
+    layer_count = await session_repo.count_layers_referencing(upload_session_id) if upload_session_id else 0
+    batch_count = await session_repo.count_batches_referencing(upload_session_id) if upload_session_id else 0
+    keep_source = layer_count > 1 or batch_count > 0
 
     # Drop the owned dynamic table before any other destructive work. If this
     # fails, retain the Layer and its other files so deletion can be retried.
@@ -885,14 +907,26 @@ async def delete_layer(
     await ProjectRepository(layer_repo.session).unlink_layer(layer_id)
     await layer_repo.delete(layer_id)
 
-    # 3. Delete source file + UploadSession
-    if upload_session:
+    # 3. Delete source file + UploadSession — only for the last consumer.
+    if upload_session and not keep_source:
         if upload_session.final_path and os.path.exists(upload_session.final_path):
             try:
                 os.unlink(upload_session.final_path)
             except OSError:
                 pass
-        await session_repo.delete(upload_session_id)
+        # Release the retained artifact lease now that no layer references it.
+        if upload_session.artifact_id and upload_session.artifact_lease_id:
+            await asyncio.to_thread(
+                _release_artifact_lease_sync,
+                upload_session.artifact_id,
+                upload_session.artifact_lease_id,
+                upload_session_id,
+            )
+        # A failed lease release sets pending_release for the reconciler. Keep
+        # the session row in that case so the retry task still has its record.
+        await session_repo.session.refresh(upload_session)
+        if not upload_session.pending_release:
+            await session_repo.delete(upload_session_id)
 
     # 4. Delete CSW record
     await asyncio.to_thread(delete_layer_from_csw, layer_id)
