@@ -36,6 +36,10 @@ to keep or discard them.
 
 ## API Reference
 
+Intersection optionally supports per-pair area and percentages with
+`calculate_area=true`. See [Polygon intersection area metrics](geospatial-analysis-enhancements.md)
+for input validation, IDs, source snapshots, and request examples.
+
 Base path: `/api/v1/analysis`
 
 ### List operations
