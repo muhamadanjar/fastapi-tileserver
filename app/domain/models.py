@@ -17,6 +17,50 @@ class JobStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
+class AnalysisReference(SQLModel, table=True):
+    __tablename__ = "analysis_references"
+    layer_id: str = Field(primary_key=True, foreign_key="layers.id")
+    name: str
+    category_field: str
+    attributes: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), sa_column=Column(DateTime(timezone=True), nullable=False))
+
+
+class AnalysisUpload(SQLModel, table=True):
+    __tablename__ = "analysis_uploads"
+    id: str = Field(primary_key=True)
+    owner_hash: str = Field(index=True)
+    filename: str
+    feature_count: int
+    geometry_types: list[str] = Field(sa_column=Column(JSON, nullable=False))
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    expires_at: datetime = Field(index=True, sa_type=DateTime(timezone=True))
+
+
+class ReferenceAnalysisJob(SQLModel, table=True):
+    __tablename__ = "reference_analysis_jobs"
+    id: str = Field(primary_key=True)
+    input_id: str = Field(foreign_key="analysis_uploads.id", unique=True)
+    owner_hash: str = Field(index=True)
+    reference_id: str  # Historical identity survives deletion of the source.
+    reference_config: dict = Field(sa_column=Column(JSON, nullable=False))
+    status: str = Field(default="pending", index=True)
+    task_id: str
+    created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))
+    started_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    completed_at: Optional[datetime] = Field(default=None, sa_column=Column(DateTime(timezone=True)))
+    expires_at: Optional[datetime] = Field(default=None, index=True, sa_type=DateTime(timezone=True))
+    error: Optional[str] = None
+    result_count: int = 0
+    source_version: Optional[str] = None
+
+
+class ActiveAnalysisSource(SQLModel, table=True):
+    __tablename__ = "active_analysis_sources"
+    job_id: str = Field(primary_key=True, foreign_key="reference_analysis_jobs.id")
+    layer_id: str = Field(foreign_key="layers.id", index=True)
+
+
 class ImportStatus(str, enum.Enum):
     not_applicable = "not_applicable"
     pending = "pending"

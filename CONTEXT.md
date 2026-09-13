@@ -110,3 +110,31 @@ Different feature pairs remain independent even when their overlaps cover the sa
 ## Analysis Source Feature ID (ID Fitur Sumber Analisis)
 
 An identifier linking an analysis result to a feature in its input layer. It comes from a selected unique, non-empty source field or is assigned for one analysis run with a mapping to the source record; an assigned ID does not imply stable identity across runs.
+
+## Analysis Reference Layer (Layer Acuan Analisis)
+
+Layer existing yang ditetapkan admin sebagai acuan untuk intersect atau query analisis terhadap objek unggahan pengguna; pengguna memilih tepat satu acuan setiap proses. Acuan memakai sumber yang sama dengan publikasi, tanpa SHP atau entri katalog tambahan, dan tidak mengubah penampilan layer sumber sesuai pengaturan publikasinya.
+_Avoid_: Basemap (peta latar).
+
+## Suitability Assessment (Penilaian Kesesuaian)
+
+Pemeriksaan otomatis objek SHP unggahan pengguna terhadap layer acuan analisis yang dikonfigurasi admin. Dalam cakupan awal, informasi kesesuaian berarti kategori acuan yang beririsan, luas, persentase, dan atribut terkait, tanpa vonis sesuai/tidak sesuai.
+
+## Boundary Contact (Kontak Batas)
+
+Hubungan objek unggahan dengan batas kategori acuan, misalnya titik pada batas,
+garis yang mengikuti batas, atau polygon yang hanya menyentuh zona lain.
+Semua kategori yang bersentuhan ditampilkan dengan penanda “pada batas”;
+kontak polygon tanpa luas dibedakan dari irisan berluas positif.
+
+## Analysis Category (Kategori Acuan Analisis)
+
+Nilai dari kolom acuan yang dipilih admin untuk mengelompokkan informasi
+hasil irisan. Nilai kosong tetap dilaporkan sebagai “Kategori belum diisi”
+dan tidak berarti objek tidak beririsan dengan acuan.
+
+## Category Summary (Rekap Kategori)
+
+Ringkasan hasil irisan per kategori dengan jumlah titik, panjang, dan luas
+dipisahkan. Bagian yang sama dalam kategori yang sama dihitung sekali per
+objek unggahan; kategori berbeda tetap independen.

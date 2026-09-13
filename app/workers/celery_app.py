@@ -6,7 +6,7 @@ celery_app = Celery(
     "tileserver",
     broker=settings.RABBITMQ_URL,
     backend=settings.REDIS_URL,
-    include=["app.workers.tasks"],
+    include=["app.workers.tasks", "app.workers.reference_analysis_tasks"],
 )
 
 celery_app.conf.update(
@@ -25,6 +25,10 @@ celery_app.conf.update(
     broker_connection_retry=True,
     broker_connection_max_retries=10,
     beat_schedule={
+        "cleanup-reference-analysis": {
+            "task": "reference_analysis.cleanup",
+            "schedule": 300.0,
+        },
         "reconcile-pending-artifact-releases": {
             "task": "app.workers.tasks.reconcile_pending_release_task",
             "schedule": 300.0,
