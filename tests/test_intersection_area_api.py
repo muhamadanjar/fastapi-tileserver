@@ -11,7 +11,7 @@ from sqlalchemy import event
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from app.api.v1.endpoints.analysis import get_analysis_usecase, router
+from app.presentation.router.api.v1.endpoints.analysis import get_analysis_usecase, router
 from app.domain.models import AnalysisResult, Layer, UploadSession
 from app.infrastructure.db.connection import get_sync_session
 from app.infrastructure.db.repository import (

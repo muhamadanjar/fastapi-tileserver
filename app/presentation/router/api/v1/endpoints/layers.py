@@ -838,6 +838,11 @@ async def delete_layer(
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
+    from app.application.reference_analysis import guard_source_delete_async, AnalysisError
+    try:
+        await guard_source_delete_async(layer_repo.session, layer_id)
+    except AnalysisError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
     layer = await layer_repo.get_by_id(layer_id)
     if not layer:
         raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
