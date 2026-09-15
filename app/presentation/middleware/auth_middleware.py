@@ -35,6 +35,10 @@ class JWTAuthenticationMiddleware(BaseHTTPMiddleware):
         )
 
     async def dispatch(self, request: Request, call_next) -> Response:
+        # Public workspace uses a separate browser capability on every private endpoint.
+        # Administrative /analysis-references routes retain their explicit guard.
+        if request.url.path.startswith("/api/v1/analysis-workspace/"):
+            return await call_next(request)
         if self.settings.AUTH_DISABLED or request.method == "OPTIONS" or not request.url.path.startswith(self.protected_prefixes):
             return await call_next(request)
 

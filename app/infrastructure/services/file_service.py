@@ -71,6 +71,25 @@ class FileService:
             raise FileSaveError(f"KML conversion failed: {str(e)}")
 
     @staticmethod
+    def save_layer_type(filename_lower: str):
+        """Map a save-eligible filename to (LayerType, stored file extension).
+
+        KML is pre-converted to GeoJSON by prepare_source_path() but keeps the
+        kml layer type; shapefile ZIPs are stored as-is (never extracted).
+        """
+        from app.domain.models import LayerType
+
+        filename_lower = filename_lower.lower()
+
+        if filename_lower.endswith('.kml'):
+            return LayerType.kml, '.geojson'
+        if filename_lower.endswith('.zip'):
+            return LayerType.shp, '.zip'
+        if filename_lower.endswith('.geojson'):
+            return LayerType.geojson, '.geojson'
+        return LayerType.geojson, '.json'
+
+    @staticmethod
     def prepare_source_path(saved_path: Path) -> Tuple[Path, str]:
         """
         Given a saved file path, returns the actual tiling source path and file_type.

@@ -10,6 +10,7 @@ from shapely.geometry import shape as _shape
 from starlette.background import BackgroundTask
 
 from app.core.config import settings
+from app.application.reference_analysis import guard_source_delete_async, AnalysisError
 from app.domain.form_validation import FormValidationError, validate_attributes, validate_form_schema
 from app.domain.geometry_validation import GeometryValidationError, validate_geometry
 from app.domain.models import Attachment, Feature, GeometryType, Layer, LayerType, Project
@@ -193,6 +194,11 @@ async def delete_project(
     layer_repo: LayerRepository = Depends(get_layer_repo),
 ):
     project = await _get_project_or_404(project_id, repo)
+    if project.layer_id:
+        try:
+            await guard_source_delete_async(layer_repo.session, project.layer_id)
+        except AnalysisError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
     await feature_repo.delete_by_project(project_id)
     await _delete_attachments_for(project, attachment_repo)
     shutil.rmtree(settings.ATTACHMENTS_DIR / project_id, ignore_errors=True)
@@ -421,6 +427,10 @@ async def unpublish_project(
     project = await _get_project_or_404(project_id, repo)
     if project.layer_id is None:
         raise HTTPException(status_code=409, detail="Project is not published")
+    try:
+        await guard_source_delete_async(layer_repo.session, project.layer_id)
+    except AnalysisError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
     layer_id = project.layer_id
     project.layer_id = None
     await repo.update(project)

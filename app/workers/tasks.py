@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 from datetime import datetime
 from typing import Optional
 from contextlib import nullcontext
@@ -48,15 +49,83 @@ def _make_progress_callback(layer_id: str, upload_id: str):
     return callback, finalize
 
 
-def _release_artifact_lease(artifact_id: Optional[str], lease_id: Optional[str]) -> None:
-    """Best-effort lease release so upload_api lifecycle cleanup can reclaim the source."""
+def _release_artifact_lease(artifact_id: Optional[str], lease_id: Optional[str], upload_id: Optional[str] = None) -> None:
+    """Best-effort lease release when no layer/batch still uses the source.
+
+    Reference-counted: the lease (a pin on the Upload API artifact) is kept
+    alive while any Layer or active Batch still references this upload session.
+    Only when the last consumer is gone is the lease released, so upload_api
+    can reclaim the artifact storage. On failure the session is marked
+    pending_release so a reconciliation pass can retry.
+    """
     if not artifact_id or not lease_id:
         return
+    if upload_id:
+        try:
+            with db.get_session() as session:
+                repo = SyncUploadSessionRepository(session)
+                layers = repo.count_layers_referencing(upload_id)
+                batches = repo.count_batches_referencing(upload_id)
+            if layers or batches:
+                # ponytail: keep the pin while consumers remain; upgrade to
+                # reference rows only if cross-service deletion races appear
+                print(f"[retention] Source {upload_id} still used by {layers} layers, {batches} batches; keeping lease {lease_id}")
+                return
+        except Exception as exc:
+            print(f"[retention] Reference check failed for {upload_id}, keeping lease: {exc}")
+            return
     try:
         UploadArtifactClient().release_lease(artifact_id, lease_id)
         print(f"[tiling] Released artifact lease {lease_id} for {artifact_id}")
+        _mark_released(upload_id)
+        _cleanup_materialized_artifact(artifact_id)
     except Exception as exc:
         print(f"[tiling] Failed to release artifact lease {lease_id} for {artifact_id}: {exc}")
+        _mark_pending_release(upload_id)
+
+
+def _cleanup_materialized_artifact(artifact_id: str) -> None:
+    """Remove the worker's cached artifact after its final lease is released."""
+    from app.core.config import settings
+
+    cache_dir = Path(settings.UPLOAD_DIR) / "_batch_work" / f"artifact_{artifact_id}"
+    try:
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    except OSError as exc:
+        print(f"[retention] Failed to clean artifact cache {cache_dir}: {exc}")
+
+
+def _mark_released(upload_id: Optional[str]) -> None:
+    """Record a successful lease release (or already-no-lease) on the session."""
+    if not upload_id:
+        return
+    try:
+        with db.get_session() as session:
+            repo = SyncUploadSessionRepository(session)
+            current = repo.get_by_id(upload_id)
+            if current:
+                current.pending_release = False
+                current.released_at = datetime.utcnow()
+                session.add(current)
+                session.commit()
+    except Exception as exc:
+        print(f"[retention] Failed to record release for {upload_id}: {exc}")
+
+
+def _mark_pending_release(upload_id: Optional[str]) -> None:
+    """Flag the upload session for reconciliation so a later pass retries the release."""
+    if not upload_id:
+        return
+    try:
+        with db.get_session() as session:
+            repo = SyncUploadSessionRepository(session)
+            current = repo.get_by_id(upload_id)
+            if current:
+                current.pending_release = True
+                session.add(current)
+                session.commit()
+    except Exception as exc:
+        print(f"[retention] Failed to flag pending release for {upload_id}: {exc}")
 
 
 @celery_app.task(bind=True, max_retries=3)
@@ -272,7 +341,7 @@ def publish_geoserver_task(self, upload_id: str, layer_id: str, code: str):
                 )
                 layer_repo.create(layer)
             SyncUploadSessionRepository(session).set_status(upload_id, JobStatus.done)
-        _release_artifact_lease(artifact_id, artifact_lease_id)
+        _release_artifact_lease(artifact_id, artifact_lease_id, upload_id)
         print(f"[geoserver] Published {code} for upload {upload_id}")
     except Exception as exc:
         with db.get_session() as session:
@@ -282,7 +351,7 @@ def publish_geoserver_task(self, upload_id: str, layer_id: str, code: str):
                 repo.set_status(upload_id, JobStatus.failed, str(exc))
         will_retry = not isinstance(exc, SystemExit) and self.request.retries < self.max_retries
         if not will_retry:
-            _release_artifact_lease(artifact_id, artifact_lease_id)
+            _release_artifact_lease(artifact_id, artifact_lease_id, upload_id)
         if not isinstance(exc, SystemExit):
             raise self.retry(exc=exc, countdown=5)
 
@@ -296,7 +365,7 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
         current = repo.get_by_id(upload_id)
         if current and current.status == JobStatus.cancelled:
             print(f"[tiling] Task {upload_id} cancelled before start, aborting.")
-            _release_artifact_lease(current.artifact_id, current.artifact_lease_id)
+            _release_artifact_lease(current.artifact_id, current.artifact_lease_id, upload_id)
             return
         if current:
             artifact_filename = current.filename
@@ -365,7 +434,7 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
                 max_zoom=max_zoom,
             )
         finalize_progress()
-        _release_artifact_lease(artifact_id, artifact_lease_id)
+        _release_artifact_lease(artifact_id, artifact_lease_id, upload_id)
         with db.get_session() as session:
             upload_repo = SyncUploadSessionRepository(session)
             upload_repo.set_status(upload_id, JobStatus.done)
@@ -424,7 +493,7 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
     except Exception as exc:
         from app.core.exceptions import TilingCancelled
         if isinstance(exc, TilingCancelled):
-            _release_artifact_lease(artifact_id, artifact_lease_id)
+            _release_artifact_lease(artifact_id, artifact_lease_id, upload_id)
             with db.get_session() as session:
                 repo = SyncUploadSessionRepository(session)
                 repo.set_status(upload_id, JobStatus.cancelled)
@@ -448,7 +517,7 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
         will_retry = not isinstance(exc, SystemExit) and self.request.retries < self.max_retries
         # Keep the lease across retries (materialize needs it); release once retries are exhausted.
         if not will_retry:
-            _release_artifact_lease(artifact_id, artifact_lease_id)
+            _release_artifact_lease(artifact_id, artifact_lease_id, upload_id)
         if not isinstance(exc, SystemExit):
             raise self.retry(exc=exc, countdown=5)
 
@@ -558,6 +627,27 @@ def download_esri_layer_task(
             })
         if isinstance(exc, EsriDownloadError):
             raise self.retry(exc=exc, countdown=10)
+        raise
+
+
+@celery_app.task(bind=True, max_retries=3)
+def run_batch_task(self, identity: str, token: str, action: str):
+    """Run batch inspection or dataset processing in the background."""
+    from app.application.map_batches import MapBatches
+    from app.infrastructure.db.catalog import SyncStore
+    from app.infrastructure.db.connection import db
+    from app.infrastructure.services.map_renderer import FileBackedMapRenderer
+
+    store = SyncStore(db.get_session)
+    renderer = FileBackedMapRenderer()
+    usecase = MapBatches(store=store, renderer=renderer, enqueue=run_batch_task.delay)
+    try:
+        usecase.run(identity, token, action)
+        print(f"[batch] {action} {identity} done")
+    except Exception as exc:
+        print(f"[batch] {action} {identity} failed: {exc}")
+        if self.request.retries < self.max_retries:
+            raise self.retry(exc=exc, countdown=5)
         raise
 
 
@@ -742,3 +832,78 @@ def estimate_esri_download_task(
             SyncLayerRepository(session).update_download_progress(
                 layer_id, {"status": "failed", "task_id": self.request.id, "error": str(exc)})
         raise self.retry(exc=exc, countdown=5)
+
+
+def _make_analysis_usecase(session):
+    """Create OverlayAnalysisUseCase bound to a sync session."""
+    from sqlmodel import select as _sel
+    from app.core.config import settings as _settings
+    from app.domain.models import Feature as _Feature
+    from app.infrastructure.db.repository import (
+        SyncLayerRepository as _SLR,
+        SyncAnalysisResultRepository as _SAR,
+        SyncUploadSessionRepository as _SUR,
+    )
+    from app.infrastructure.services.analysis_export import AnalysisExportService as _AES
+    from app.usecases.overlay_analysis import OverlayAnalysisUseCase as _UC
+
+    def _get_features(project_id: str) -> list[_Feature]:
+        return list(session.exec(_sel(_Feature).where(_Feature.project_id == project_id)).all())
+
+    return _UC(
+        layer_repo=_SLR(session),
+        analysis_repo=_SAR(session),
+        upload_repo=_SUR(session),
+        get_project_features_fn=_get_features,
+        export_service=_AES(_settings.UPLOAD_DIR),
+        task_enqueuer=None,  # not needed for worker execution
+        ephemeral_ttl_hours=_settings.ANALYSIS_EPHEMERAL_TTL_HOURS,
+    )
+
+
+@celery_app.task(bind=True, max_retries=1)
+def run_analysis_task(self, request: dict, result_id: str, layer_id: str,
+                      analysis_result_id: str):
+    """Execute an overlay analysis that was queued asynchronously."""
+    try:
+        with db.get_session() as session:
+            usecase = _make_analysis_usecase(session)
+            usecase.execute_pending_analysis(request, result_id, layer_id, analysis_result_id)
+        print(f"[analysis] {analysis_result_id} done")
+    except Exception as exc:
+        print(f"[analysis] {analysis_result_id} failed: {exc}")
+        raise self.retry(exc=exc, countdown=5)
+
+
+@celery_app.task(bind=True, max_retries=1)
+def cleanup_analysis_ephemeral_task(self, ttl_hours: int | None = None):
+    """Periodic/one-off cleanup of abandoned ephemeral analysis layers."""
+    with db.get_session() as session:
+        usecase = _make_analysis_usecase(session)
+        result = usecase.cleanup_ephemeral(ttl_hours=ttl_hours)
+    print(f"[analysis] cleanup: {result}")
+    return result
+
+
+@celery_app.task(bind=True, max_retries=1)
+def reconcile_pending_release_task(self):
+    """Retry lease releases that previously failed while Upload API was down.
+
+    Scans upload_sessions flagged pending_release and retries the release once
+    (reference-counted: layers/batches still using the source keep the pin).
+    """
+    from sqlmodel import select as _sel
+    from app.domain.models import UploadSession
+    from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
+
+    with db.get_session() as session:
+        rows = session.exec(
+            _sel(UploadSession).where(
+                UploadSession.pending_release.is_(True),
+                UploadSession.artifact_lease_id.is_not(None),
+            )
+        ).all()
+    for row in rows:
+        _release_artifact_lease(row.artifact_id, row.artifact_lease_id, row.id)
+    print(f"[retention] Reconciled {len(rows)} pending release(s)")
+    return len(rows)

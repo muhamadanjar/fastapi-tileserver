@@ -1,6 +1,7 @@
 import asyncio
 import os
 import shutil
+import zipfile
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
@@ -16,7 +17,7 @@ from app.core.exceptions import (
     SessionExpiredError,
     UnsupportedFileFormatException,
 )
-from app.domain.models import ImportStatus, JobStatus, Layer, LayerType
+from app.domain.models import ImportStatus, JobStatus, Layer
 from app.domain.schemas import (
     ChunkUploadResponse,
     JobStatusResponse,
@@ -50,12 +51,25 @@ def _get_layer_repo(session=Depends(get_async_session)) -> LayerRepository:
     return LayerRepository(session)
 
 
+def _artifact_handoff_output_format(body: ArtifactTilingRequest) -> str:
+    """Return the persisted legacy format without preselecting a batch output."""
+    if body.workflow == "batch":
+        if body.output_format is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="Batch artifact handoff cannot select an output format; configure the batch after inspection",
+            )
+        return "staged"
+    return body.output_format or "raster"
+
+
 @router.post("/artifact", response_model=ArtifactTilingResponse, status_code=202)
 async def create_artifact_tiling_job(
     body: ArtifactTilingRequest,
     repo: UploadSessionRepository = Depends(_get_repo),
 ):
-    """Stage an available upload_api artifact for a later tiling request."""
+    """Stage an available artifact for a later layer job or batch inspection."""
+    output_format = _artifact_handoff_output_format(body)
     existing = await repo.get_by_artifact_handoff(body.handoff_id)
     if existing:
         if existing.artifact_id != body.artifact_id:
@@ -96,7 +110,7 @@ async def create_artifact_tiling_job(
         received_bytes=artifact["size_bytes"],
         status=JobStatus.uploaded,
         final_path=f"artifact://{body.artifact_id}",
-        output_format=body.output_format,
+        output_format=output_format,
         max_zoom=body.max_zoom,
         chunk_map={},
         total_chunks=1,
@@ -260,11 +274,11 @@ async def save_geojson(
         raise HTTPException(status_code=404, detail="Upload session not found")
 
     filename_lower = session.filename.lower()
-    allowed_exts = ('.geojson', '.json', '.kml')
+    allowed_exts = ('.geojson', '.json', '.kml', '.zip')
     if not any(filename_lower.endswith(ext) for ext in allowed_exts):
         raise HTTPException(
             status_code=400,
-            detail=f"Save layer only supports .geojson/.json/.kml files, got '{session.filename}'",
+            detail=f"Save layer only supports .geojson/.json/.kml/.zip files, got '{session.filename}'",
         )
 
     allowed_statuses = {JobStatus.uploaded, JobStatus.failed}
@@ -289,15 +303,9 @@ async def save_geojson(
     )
 
     is_kml = filename_lower.endswith('.kml')
+    is_zip = filename_lower.endswith('.zip')
     layer_id = session.layer_id
-
-    # KML is pre-converted to GeoJSON by prepare_source_path(); always store as .geojson
-    if is_kml or filename_lower.endswith('.geojson'):
-        file_ext = '.geojson'
-    else:
-        file_ext = '.json'
-
-    determined_layer_type = LayerType.kml if is_kml else LayerType.geojson
+    determined_layer_type, file_ext = FileService.save_layer_type(filename_lower)
 
     # Create layer directory if it doesn't exist
     layer_dir = Path(settings.TILES_DIR) / layer_id
@@ -309,10 +317,19 @@ async def save_geojson(
         # prepare_source_path menyamakan behavior dengan flow lokal: KML dikonversi ke GeoJSON.
         source_path, _ = FileService.prepare_source_path(Path(materialized_source))
 
-        # Copy GeoJSON or JSON as-is
+        if is_zip:
+            # Validate shapefile.zip is well-formed and actually contains a .shp member.
+            try:
+                with zipfile.ZipFile(source_path) as zf:
+                    if not any(n.lower().endswith('.shp') for n in zf.namelist()):
+                        raise HTTPException(status_code=422, detail="ZIP does not contain a .shp file")
+            except zipfile.BadZipFile as exc:
+                raise HTTPException(status_code=422, detail="Invalid ZIP file") from exc
+
+        # Copy the source as-is (GeoJSON/JSON or shapefile ZIP)
         shutil.copy2(source_path, dest_path)
 
-        # Extract bbox
+        # Extract bbox (geopandas reads shapefile ZIPs in place, no extraction)
         bbox = extract_bbox_from_file(source_path)
 
     # Create or update layer

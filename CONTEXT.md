@@ -26,6 +26,23 @@ Making a Project visible on the map by creating a Layer backed by the Project's 
 
 A renderable map entry tracked in the `layers` table. May originate from a local upload (tiled by us) or reference an external/remote service.
 
+## Layer Group
+
+A named, ordered composition of independent Layers presented together as one map without merging their datasets. A Layer may belong to multiple groups: display order and visibility belong to each membership, while style belongs to the Layer and changes affect every group using it.
+_Avoid_: Merged Layer, Project (which means a survey container).
+
+## Batch Group Mode
+
+A batch of datasets from one source ZIP processed together: `separate` publishes each dataset as an independent Layer; `group` additionally composes visible members into a Layer Group (named, ordered, per-member style + visibility) with combined WMS/raster/MVT URLs and legend. Group publishing is tied to `format == wms` (groupable) vs vector/raster (WMS-composite still works via layer group).
+
+## Artifact Source & Cached Materialization
+
+A batch may render from an Upload API artifact (`artifact://`) instead of a local file. `_resolve_source_path` downloads once per `artifact_id` into `_batch_work/artifact_{id}/` and reuses the file for every dataset in the batch. A successful cancellation or release marks the cache for cleanup only when no Layer or active Batch still references the upload session (reference-counted retention).
+
+## Upload Lease (pin) & Retention
+
+Upload API artifact leases have **no expiry**: holding a lease pins the artifact so `request_deletion` is blocked. The tileserver holds the lease while any Layer or active Batch references the upload session (`count_layers_referencing`, `count_batches_referencing`; terminal batches excluded). Release is idempotent and reference-counted: last consumer releases, failures flag `pending_release` on the upload session for the `reconcile_pending_release_task` to retry. Deleting the last consuming Layer also releases the lease and removes the source file/session.
+
 ## GeoServer-published Layer
 
 A Layer whose data was pushed by this service to GeoServer (SHP publish flow). Recognisable by populated GeoServer metadata. It is the only kind of WMS Layer whose style we can edit; External WMS Layers are read-only foreign services.
@@ -61,3 +78,63 @@ GeoServer holds the *rendering truth* (the SLD actually applied). The database h
 ## Default Style (GeoServer sense)
 
 The style GeoServer applies to GetMap requests when none is named. Our per-Layer style is always installed as the Layer's Default Style, so existing WMS URLs keep working unchanged.
+
+## Geocoding (of a Feature)
+
+Resolving an address from a Feature's coordinates (reverse) or finding Features near a place name (forward), via an external geocoder (Nominatim/OSM). Reverse targets a single Feature identified by its 0-based row index within the Layer. Forward returns the nearest Features within a radius, sorted by great-circle distance; non-point geometries are represented by a single representative point for distance and addressing.
+
+## Overlay Analysis
+
+Spatial operation performed on two (or one) vector layers to produce a new geometry result. Supported operations in Phase 1: Intersection, Union, Dissolve, Clip, Difference, Buffer. Each operation has geometry-type compatibility rules — incompatible operations are disabled for a given input pair. The result is an ephemeral Layer that appears on the map; the user may choose to persist it or discard it.
+
+## Overlay Operation
+
+A specific spatial analysis function applied to input layers. Each operation defines: required input count (1 or 2), compatible geometry types for each input, and the geometry type of the output. Operations are divided into Phase 1 (core) and Phase 2 (extended).
+
+## Ephemeral Layer
+
+A Layer created by overlay analysis that exists temporarily on the map. It has a GeoJSON result file on disk and a Layer record in the database, but is flagged as ephemeral in `file_metadata.analysis.ephemeral`. The user may persist it (removing the ephemeral flag) or discard it (deleting both file and record).
+
+## Dissolve (spatial)
+
+Merging features within a single layer into fewer or one geometry. Full dissolve merges all features into one. Group-by dissolve merges features that share the same attribute value, producing one geometry per unique value.
+
+## Feature-pair Intersection (Perpotongan Pasangan Fitur)
+
+The spatial overlap between one polygon feature from Layer A and one polygon feature from Layer B, associated with both source feature identities. Its measurements include overlap area and the percentage of each source feature's full area occupied by that overlap.
+
+For polygon-area analysis, a result requires positive overlap area; contact only along an edge or at a point does not produce a result.
+
+Different feature pairs remain independent even when their overlaps cover the same area; summing pair areas does not necessarily give unique coverage.
+
+## Analysis Source Feature ID (ID Fitur Sumber Analisis)
+
+An identifier linking an analysis result to a feature in its input layer. It comes from a selected unique, non-empty source field or is assigned for one analysis run with a mapping to the source record; an assigned ID does not imply stable identity across runs.
+
+## Analysis Reference Layer (Layer Acuan Analisis)
+
+Layer existing yang ditetapkan admin sebagai acuan untuk intersect atau query analisis terhadap objek unggahan pengguna; pengguna memilih tepat satu acuan setiap proses. Acuan memakai sumber yang sama dengan publikasi, tanpa SHP atau entri katalog tambahan, dan tidak mengubah penampilan layer sumber sesuai pengaturan publikasinya.
+_Avoid_: Basemap (peta latar).
+
+## Suitability Assessment (Penilaian Kesesuaian)
+
+Pemeriksaan otomatis objek SHP unggahan pengguna terhadap layer acuan analisis yang dikonfigurasi admin. Dalam cakupan awal, informasi kesesuaian berarti kategori acuan yang beririsan, luas, persentase, dan atribut terkait, tanpa vonis sesuai/tidak sesuai.
+
+## Boundary Contact (Kontak Batas)
+
+Hubungan objek unggahan dengan batas kategori acuan, misalnya titik pada batas,
+garis yang mengikuti batas, atau polygon yang hanya menyentuh zona lain.
+Semua kategori yang bersentuhan ditampilkan dengan penanda “pada batas”;
+kontak polygon tanpa luas dibedakan dari irisan berluas positif.
+
+## Analysis Category (Kategori Acuan Analisis)
+
+Nilai dari kolom acuan yang dipilih admin untuk mengelompokkan informasi
+hasil irisan. Nilai kosong tetap dilaporkan sebagai “Kategori belum diisi”
+dan tidak berarti objek tidak beririsan dengan acuan.
+
+## Category Summary (Rekap Kategori)
+
+Ringkasan hasil irisan per kategori dengan jumlah titik, panjang, dan luas
+dipisahkan. Bagian yang sama dalam kategori yang sama dihitung sekali per
+objek unggahan; kategori berbeda tetap independen.

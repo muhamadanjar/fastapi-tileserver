@@ -83,12 +83,37 @@ class Settings(BaseSettings):
     # Upload session expiry in hours (default 24)
     UPLOAD_SESSION_EXPIRE_HOURS: int = Field(default=24, env="UPLOAD_SESSION_EXPIRE_HOURS")
 
+
     # OpenTelemetry logging
     OTEL_ENABLED: bool = Field(default=False, env="OTEL_ENABLED")
     OTEL_SERVICE_NAME: str = Field(default="fastapi-tileserver", env="OTEL_SERVICE_NAME")
     OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = Field(
         default=None, env="OTEL_EXPORTER_OTLP_ENDPOINT"
     )
+
+    # Overlay analysis
+    ANALYSIS_MAX_FEATURES: int = Field(default=5000, gt=0)
+    ANALYSIS_MAX_UPLOAD_BYTES: int = Field(default=50 * 1024 * 1024, gt=0)
+    ANALYSIS_MAX_EXTRACTED_BYTES: int = Field(default=250 * 1024 * 1024, gt=0)
+    ANALYSIS_MAX_VERTICES: int = Field(default=1_000_000, gt=0)
+    ANALYSIS_MAX_RESULTS: int = Field(default=100_000, gt=0)
+    ANALYSIS_MAX_ACTIVE_JOBS: int = Field(default=4, gt=0)
+    ANALYSIS_MAX_OWNER_INPUTS: int = Field(default=5, gt=0)
+    ANALYSIS_MAX_STORED_INPUTS: int = Field(default=200, gt=0)
+    ANALYSIS_JOB_TIMEOUT_SECONDS: int = Field(default=900, gt=0)
+    ANALYSIS_QUEUE_TIMEOUT_SECONDS: int = Field(default=3600, gt=0)
+    ANALYSIS_ASYNC_THRESHOLD: int = Field(
+        default=100_000, env="ANALYSIS_ASYNC_THRESHOLD"
+    )
+    ANALYSIS_EPHEMERAL_TTL_HOURS: int = Field(
+        default=24, env="ANALYSIS_EPHEMERAL_TTL_HOURS"
+    )
+
+    # Geocoding (Nominatim / OSM)
+    NOMINATIM_URL: str = Field(default="https://nominatim.openstreetmap.org", env="NOMINATIM_URL")
+    NOMINATIM_TIMEOUT: int = Field(default=10, env="NOMINATIM_TIMEOUT")
+    NOMINATIM_USER_AGENT: str = Field(default="tileserver-api", env="NOMINATIM_USER_AGENT")
+
 
     # CORS
     CORS_ALLOWED_ORIGINS: str = Field(default="*", env="CORS_ALLOWED_ORIGINS")

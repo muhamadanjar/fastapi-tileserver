@@ -1,0 +1,38 @@
+x-base-service: &base-service
+  image: ghcr.io/muhamadanjar/tileserver:1.1.1
+  env_file:
+    - .env.tileserver
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  networks:
+    - infra_network
+services:
+  app:
+    <<: *base-service
+    container_name: tileserver
+    restart: always
+    ports:
+      - "8050:8000"
+    volumes:
+      - tileserver-data:/app/data
+  worker:
+    <<: *base-service
+    container_name: tileserver_worker
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app worker --loglevel=INFO --queues=tileserver --without-mingle
+    volumes:
+      - tileserver-data:/app/data
+  beat:
+    <<: *base-service
+    container_name: tileserver_beat
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app beat --loglevel=INFO --schedule=/app/data/celerybeat-schedule
+    volumes:
+      - tileserver-data:/app/data
+networks:
+  infra_network:
+    external: true
+    name: ${STORAGE_NETWORK_NAME:-infra_network}
+
+volumes:
+  tileserver-data:
