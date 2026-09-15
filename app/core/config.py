@@ -83,6 +83,13 @@ class Settings(BaseSettings):
     # Upload session expiry in hours (default 24)
     UPLOAD_SESSION_EXPIRE_HOURS: int = Field(default=24, env="UPLOAD_SESSION_EXPIRE_HOURS")
 
+    # OpenTelemetry logging
+    OTEL_ENABLED: bool = Field(default=False, env="OTEL_ENABLED")
+    OTEL_SERVICE_NAME: str = Field(default="fastapi-tileserver", env="OTEL_SERVICE_NAME")
+    OTEL_EXPORTER_OTLP_ENDPOINT: Optional[str] = Field(
+        default=None, env="OTEL_EXPORTER_OTLP_ENDPOINT"
+    )
+
     # CORS
     CORS_ALLOWED_ORIGINS: str = Field(default="*", env="CORS_ALLOWED_ORIGINS")
     CORS_ALLOWED_METHODS: str = Field(default="*", env="CORS_ALLOWED_METHODS")

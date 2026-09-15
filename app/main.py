@@ -10,6 +10,7 @@ from app.presentation.middleware.auth_middleware import JWTAuthenticationMiddlew
 from app.api.v1.api import api_router
 from app.api.v1.endpoints.mvt import router as mvt_router
 from app.infrastructure.db.connection import db
+from app.infrastructure.observability.otel_logging import configure_otel_logging
 
 _csw_logger = logging.getLogger("app.csw_init")
 
@@ -17,6 +18,22 @@ app = FastAPI(
     title=settings.PROJECT_NAME,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
 )
+
+
+@app.on_event("startup")
+async def _init_otel_logging():
+    app.state.otel_logging = configure_otel_logging(
+        enabled=settings.OTEL_ENABLED,
+        service_name=settings.OTEL_SERVICE_NAME,
+        endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT,
+    )
+
+
+@app.on_event("shutdown")
+async def _shutdown_otel_logging():
+    otel_logging = getattr(app.state, "otel_logging", None)
+    if otel_logging is not None:
+        otel_logging.shutdown()
 
 
 @app.on_event("startup")
