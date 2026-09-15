@@ -36,6 +36,7 @@ from app.usecases.init_chunked_upload import InitChunkedUploadUseCase
 from app.usecases.receive_chunk import ReceiveChunkUseCase
 from app.workers.tasks import process_tiling_task, publish_geoserver_task
 from app.infrastructure.services.file_service import FileService
+from app.infrastructure.services.bbox_extractor import extract_bbox_from_file
 from app.infrastructure.services.upload_artifact_client import UploadArtifactClient, UploadArtifactClientError
 from app.domain.models import UploadSession
 from app.usecases.shapefile_import_dispatch import dispatch_shapefile_import
