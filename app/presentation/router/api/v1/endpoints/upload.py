@@ -264,8 +264,8 @@ async def publish_to_geoserver(
     }
 
 
-@router.post("/{upload_id}/save")
-async def save_geojson(
+@router.post("/{upload_id}/save", summary="Save Layer")
+async def save_layer(
     upload_id: str,
     repo: UploadSessionRepository = Depends(_get_repo),
     layer_repo: LayerRepository = Depends(_get_layer_repo),

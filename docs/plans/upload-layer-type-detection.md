@@ -16,7 +16,7 @@ Extend the existing `/uploads/{id}/save` endpoint so an uploaded vector file get
 ## Changes
 
 - `app/domain/models.py`: add `shp = "shp"` to `LayerType` (plain str column — no migration).
-- `app/presentation/router/api/v1/endpoints/upload.py` `save_geojson`:
+- `app/presentation/router/api/v1/endpoints/upload.py` `save_layer`:
   - allow `.zip` in addition to `.geojson/.json/.kml`
   - validate the zip contains a `.shp` member, else 422
   - `file_ext` and `layer_type`: k‑ml→kml, geojson/json→geojson, zip→shp
