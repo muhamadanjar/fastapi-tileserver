@@ -4,10 +4,12 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from redis import asyncio as aioredis
 
 from app.core.config import settings
 from app.presentation.middleware.auth_middleware import JWTAuthenticationMiddleware
 from app.presentation.middleware.analysis_upload_limit import AnalysisUploadLimitMiddleware
+from app.presentation.middleware.rate_limit import RateLimitMiddleware
 from app.presentation.router.api.v1.api import api_router
 from app.presentation.router.api.v1.endpoints.mvt import router as mvt_router
 from app.infrastructure.db.connection import db
@@ -74,6 +76,14 @@ async def _init_csw():
 
 # app.add_middleware(JWTAuthenticationMiddleware, settings=settings)
 app.add_middleware(AnalysisUploadLimitMiddleware, max_bytes=settings.ANALYSIS_MAX_UPLOAD_BYTES)
+app.add_middleware(
+    RateLimitMiddleware,
+    redis_client=aioredis.from_url(settings.REDIS_URL, decode_responses=True),
+    enabled=settings.RATE_LIMIT_ENABLED,
+    max_requests=settings.RATE_LIMIT_REQUESTS,
+    window_seconds=settings.RATE_LIMIT_WINDOW_SECONDS,
+    key_prefix=settings.RATE_LIMIT_KEY_PREFIX,
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.get_cors_origins(),
