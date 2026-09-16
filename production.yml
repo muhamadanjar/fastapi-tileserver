@@ -1,5 +1,5 @@
 x-base-service: &base-service
-  image: ghcr.io/muhamadanjar/tileserver:1.1.1
+  image: ghcr.io/muhamadanjar/tileserver:1.9.0
   env_file:
     - .env.tileserver
   extra_hosts:
