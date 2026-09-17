@@ -2,7 +2,7 @@
 from typing import Literal
 
 import requests
-from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,9 +15,11 @@ from app.infrastructure.wiring import default_analysis_reference_source, default
 router = APIRouter()
 
 
-def require_admin(authorization: str | None = Header(default=None)):
-    # main.py currently disables the global middleware; this guard must stand alone.
+def require_admin(request: Request, authorization: str | None = Header(default=None)):
+    """Use the global authorization decision, with a standalone-router fallback."""
     if settings.AUTH_DISABLED:
+        return
+    if hasattr(request.state, "principal"):
         return
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "Login dengan izin tiles.manage diperlukan.")
@@ -138,7 +140,7 @@ def status(job_id: str, identity=Depends(owner), svc=Depends(service)):
 def rows(job_id: str, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500), identity=Depends(owner), svc=Depends(service)):
     return invoke(svc.rows, job_id, identity, offset, limit)
 
-@router.post("/analysis-workspace/jobs/{job_id}/save")
+@router.post("/analysis-workspace/jobs/{job_id}/save", dependencies=[Depends(require_admin)])
 def save_job(job_id: str, identity=Depends(owner), svc=Depends(service)):
     return invoke(svc.save, job_id, identity)
 

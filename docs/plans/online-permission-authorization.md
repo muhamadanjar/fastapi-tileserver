@@ -6,28 +6,38 @@ Related System Plan: [Online Permission Authorization](../../../usermanagement_a
 
 ## Objective
 
-Replace Tileserver's local JWT-only authorization with an online, fail-closed
-authorization decision from User Management for every protected route.
+Make Tileserver an OAuth2 resource server. It accepts only User Management's
+internal user JWT, forwards that bearer token to User Management for an online,
+fail-closed authorization decision, and leaves the browser-owned analysis
+workspace public without making the rest of the service public.
+
+Raw OAuth access tokens are identity-only and are not accepted by Tileserver.
+An OAuth login must first be exchanged by User Management for its internal JWT.
 
 ## Route permission matrix
 
 | Route family | Method | Permission |
 | --- | --- | --- |
-| `/tiles`, `/downloads`, `/attachments` | any protected read | `tiles.read` |
-| `/api/v1` | `GET`, `HEAD` | `tiles.read` |
-| `/api/v1` | other methods | `tiles.manage` |
+| All protected routes | `GET`, `HEAD` | `tiles.read` |
+| All protected routes | `POST`, `PUT`, `PATCH`, `DELETE` | `tiles.manage` |
+| `/api/v1/analysis-references/*` | any | `tiles.manage` |
+| `/api/v1/analysis-workspace/jobs/{job_id}/save` | `POST` | `tiles.manage` |
 
-`/health`, `/`, OpenAPI/docs, and `OPTIONS` remain public. This is an initial
-coarse-grained matrix; individual mutation families may later split from
-`tiles.manage` without altering the authorization client contract.
+The public allowlist is `/`, health, OpenAPI/docs, `OPTIONS`, and
+`/api/v1/analysis-workspace/*` except its durable-result `save` operation.
+Workspace data remains isolated by the required `X-Analysis-Session` capability.
+Every route not on this allowlist is protected by default. Permissions are
+service-wide in this phase; resource ownership and tenant authorization are out
+of scope until User Management exposes that contract.
 
 ## Implementation
 
-1. Add User Management URL and authorization timeout configuration.
-2. Replace local JWT verification in middleware with a POST to
-   `/auth/authorize`, forwarding the bearer token and a middleware-selected
-   permission.
-3. Map denial to `403`; map User Management timeout/error to `503`; preserve
-   `401` for missing/malformed credentials.
-4. Set `request.state.principal` from the returned minimal identity.
-5. Add middleware tests for allow, deny, and unavailable authorization service.
+1. Enable the authorization middleware in the application composition root.
+2. Use a narrow public allowlist rather than a protected-prefix list.
+3. POST each protected request's bearer token and required permission to
+   `/auth/authorize`; do not verify or fall back to local JWT claims.
+4. Map missing/malformed or invalid tokens to `401`, denial to `403`, and User
+   Management outage/malformed response to `503`.
+5. Keep `AUTH_DISABLED` as an explicit local/test escape hatch only.
+6. Add regression coverage for the allowlist, route permissions, unavailable
+   User Management, and the protected workspace save boundary.

@@ -95,7 +95,7 @@ async def _init_csw():
 
     await asyncio.to_thread(_sync_existing)
 
-# app.add_middleware(JWTAuthenticationMiddleware, settings=settings)
+app.add_middleware(JWTAuthenticationMiddleware, settings=settings)
 app.add_middleware(AnalysisUploadLimitMiddleware, max_bytes=settings.ANALYSIS_MAX_UPLOAD_BYTES)
 app.add_middleware(
     RateLimitMiddleware,

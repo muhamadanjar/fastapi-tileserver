@@ -16,11 +16,8 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "FastAPI Tileserver"
     API_V1_STR: str = "/api/v1"
 
-    # User Management access-token verification. Use exactly one verifier key:
-    # ACCESS_TOKEN_SECRET for HS256, or ACCESS_TOKEN_PUBLIC_KEY for RS256.
-    ACCESS_TOKEN_SECRET: Optional[str] = Field(default=None, env="ACCESS_TOKEN_SECRET")
-    ACCESS_TOKEN_PUBLIC_KEY: Optional[str] = Field(default=None, env="ACCESS_TOKEN_PUBLIC_KEY")
-    ACCESS_TOKEN_ALGORITHMS: str = Field(default="HS256,RS256", env="ACCESS_TOKEN_ALGORITHMS")
+    # User Management is the OAuth2 authorization server and validates user JWTs
+    # online for Tileserver. Tileserver intentionally holds no user-token key.
     AUTH_DISABLED: bool = Field(default=False, env="AUTH_DISABLED")
     USERMANAGEMENT_API_URL: str = Field(
         default="http://localhost:8000", env="USERMANAGEMENT_API_URL"
@@ -143,10 +140,6 @@ class Settings(BaseSettings):
         if isinstance(self.CORS_ALLOWED_HEADERS, str):
             return [i.strip() for i in self.CORS_ALLOWED_HEADERS.split(",")]
         return self.CORS_ALLOWED_HEADERS
-
-    @property
-    def access_token_algorithms(self) -> List[str]:
-        return [item.strip() for item in self.ACCESS_TOKEN_ALGORITHMS.split(",") if item.strip()]
 
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE),

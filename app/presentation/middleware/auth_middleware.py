@@ -12,9 +12,11 @@ from app.core.security import AuthPrincipal
 
 
 class JWTAuthenticationMiddleware(BaseHTTPMiddleware):
-    """Require a current User Management permission decision for protected paths."""
+    """Require a live User Management decision for every non-public route."""
 
-    protected_prefixes = ("/api/v1", "/downloads", "/attachments")
+    public_paths = frozenset({"/", "/health", "/api/v1/openapi.json"})
+    public_prefixes = ("/docs", "/redoc")
+    analysis_workspace_prefix = "/api/v1/analysis-workspace"
 
     def __init__(self, app, settings: Settings):
         super().__init__(app)
@@ -22,9 +24,30 @@ class JWTAuthenticationMiddleware(BaseHTTPMiddleware):
 
     @staticmethod
     def _required_permission(request: Request) -> str:
-        if request.url.path.startswith(("/tiles", "/downloads", "/attachments")):
-            return "tiles.read"
+        path = request.url.path.rstrip("/") or "/"
+        if path.startswith("/api/v1/analysis-references/"):
+            return "tiles.manage"
+        if path.startswith(f"{JWTAuthenticationMiddleware.analysis_workspace_prefix}/jobs/") and path.endswith("/save"):
+            return "tiles.manage"
         return "tiles.read" if request.method in {"GET", "HEAD"} else "tiles.manage"
+
+    @classmethod
+    def _is_public(cls, request: Request) -> bool:
+        if request.method == "OPTIONS":
+            return True
+
+        path = request.url.path.rstrip("/") or "/"
+        if path in cls.public_paths:
+            return True
+        if any(path == prefix or path.startswith(f"{prefix}/") for prefix in cls.public_prefixes):
+            return True
+
+        if path.startswith(f"{cls.analysis_workspace_prefix}/"):
+            return not (
+                path.startswith(f"{cls.analysis_workspace_prefix}/jobs/")
+                and path.endswith("/save")
+            )
+        return False
 
     def _authorize(self, token: str, permission: str) -> requests.Response:
         return requests.post(
@@ -35,11 +58,7 @@ class JWTAuthenticationMiddleware(BaseHTTPMiddleware):
         )
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        # Public workspace uses a separate browser capability on every private endpoint.
-        # Administrative /analysis-references routes retain their explicit guard.
-        if request.url.path.startswith("/api/v1/analysis-workspace/"):
-            return await call_next(request)
-        if self.settings.AUTH_DISABLED or request.method == "OPTIONS" or not request.url.path.startswith(self.protected_prefixes):
+        if self.settings.AUTH_DISABLED or self._is_public(request):
             return await call_next(request)
 
         scheme, _, token = request.headers.get("Authorization", "").partition(" ")

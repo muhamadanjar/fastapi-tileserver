@@ -1,4 +1,7 @@
-# Tileserver JWT Authentication Plan
+# Tileserver JWT Authentication Plan (Superseded)
+
+> Superseded by [Tileserver Online Permission Authorization](online-permission-authorization.md).
+> Tileserver no longer validates user JWTs locally or receives a signing key.
 
 ## Objective
 

@@ -1,40 +1,22 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
 
-from jose import jwt
+import requests
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.presentation.middleware.auth_middleware import JWTAuthenticationMiddleware
 from app.core.config import Settings
-from app.core.security import TokenVerificationError, verify_access_token
-
-
-SECRET = "tileserver-test-shared-secret"
+from app.presentation.middleware.auth_middleware import JWTAuthenticationMiddleware
 
 
 def _settings() -> Settings:
-    return Settings(ACCESS_TOKEN_SECRET=SECRET, ACCESS_TOKEN_ALGORITHMS="HS256")
+    return Settings(AUTH_DISABLED=False, USERMANAGEMENT_API_URL="http://identity")
 
 
-def _token(*, token_type: str = "access", expires_in_minutes: int = 5) -> str:
-    return jwt.encode(
-        {
-            "sub": "user-123",
-            "token_type": token_type,
-            "scopes": ["tiles.read"],
-            "exp": datetime.now(timezone.utc) + timedelta(minutes=expires_in_minutes),
-        },
-        SECRET,
-        algorithm="HS256",
-    )
-
-
-def _request(path: str, authorization: str = "") -> Request:
+def _request(path: str, *, method: str = "GET", authorization: str = "") -> Request:
     return Request(
         {
             "type": "http",
-            "method": "GET",
+            "method": method,
             "path": path,
             "headers": [(b"authorization", authorization.encode())] if authorization else [],
             "scheme": "http",
@@ -44,49 +26,58 @@ def _request(path: str, authorization: str = "") -> Request:
     )
 
 
-def test_verifies_usermanagement_access_token():
-    principal = verify_access_token(_token(), _settings())
+class AllowResponse:
+    status_code = 200
 
-    assert principal.subject == "user-123"
-    assert principal.permissions == frozenset({"tiles.read"})
-
-
-def test_rejects_refresh_token():
-    try:
-        verify_access_token(_token(token_type="refresh"), _settings())
-    except TokenVerificationError as exc:
-        assert str(exc) == "Bearer token must be an access token"
-    else:
-        raise AssertionError("Refresh token must not authenticate a Tileserver request")
+    @staticmethod
+    def json():
+        return {"data": {"allowed": True, "principal": {"id": "user-123"}}}
 
 
-def test_protected_paths_require_a_bearer_access_token():
+async def _next_handler(_: Request) -> Response:
+    return Response(status_code=204)
+
+
+def test_default_protected_paths_require_a_bearer_token():
     middleware = JWTAuthenticationMiddleware(lambda _: Response(), settings=_settings())
 
-    class AllowResponse:
-        status_code = 200
+    assert asyncio.run(middleware.dispatch(_request("/health"), _next_handler)).status_code == 204
+    assert asyncio.run(middleware.dispatch(_request("/api/v1/analysis-workspace/references"), _next_handler)).status_code == 204
+    assert asyncio.run(middleware.dispatch(_request("/api/v1/layers"), _next_handler)).status_code == 401
+    assert asyncio.run(middleware.dispatch(_request("/future-route"), _next_handler)).status_code == 401
 
-        @staticmethod
-        def json():
-            return {"data": {"allowed": True, "principal": {"id": "user-123"}}}
 
-    middleware._authorize = lambda *_: AllowResponse()
+def test_workspace_save_requires_tiles_manage_and_allows_valid_bearer():
+    middleware = JWTAuthenticationMiddleware(lambda _: Response(), settings=_settings())
+    permissions: list[str] = []
 
-    async def next_handler(_: Request) -> Response:
-        return Response(status_code=204)
+    def authorize(_token: str, permission: str):
+        permissions.append(permission)
+        return AllowResponse()
 
-    health = asyncio.run(middleware.dispatch(_request("/health"), next_handler))
-    missing = asyncio.run(middleware.dispatch(_request("/api/v1/layers"), next_handler))
-    valid = asyncio.run(
-        middleware.dispatch(
-            _request("/api/v1/layers", f"Bearer {_token()}"),
-            next_handler,
-        )
-    )
+    middleware._authorize = authorize
+    save_path = "/api/v1/analysis-workspace/jobs/job-1/save"
 
-    assert health.status_code == 204
-    assert missing.status_code == 401
-    assert valid.status_code == 204
+    assert asyncio.run(middleware.dispatch(_request(save_path), _next_handler)).status_code == 401
+    assert asyncio.run(
+        middleware.dispatch(_request(save_path, method="POST", authorization="Bearer jwt"), _next_handler)
+    ).status_code == 204
+    assert permissions == ["tiles.manage"]
+
+
+def test_permission_matrix_uses_manage_for_mutations_and_reference_configuration():
+    middleware = JWTAuthenticationMiddleware(lambda _: Response(), settings=_settings())
+    permissions: list[str] = []
+    middleware._authorize = lambda _token, permission: permissions.append(permission) or AllowResponse()
+
+    for request in (
+        _request("/tiles/layer/0/0/0.pbf", authorization="Bearer jwt"),
+        _request("/api/v1/layers/layer", method="PATCH", authorization="Bearer jwt"),
+        _request("/api/v1/analysis-references/layer", authorization="Bearer jwt"),
+    ):
+        assert asyncio.run(middleware.dispatch(request, _next_handler)).status_code == 204
+
+    assert permissions == ["tiles.read", "tiles.manage", "tiles.manage"]
 
 
 def test_permission_denial_is_forbidden():
@@ -101,10 +92,27 @@ def test_permission_denial_is_forbidden():
 
     middleware._authorize = lambda *_: DenyResponse()
 
-    async def next_handler(_: Request) -> Response:
-        return Response(status_code=204)
-
     response = asyncio.run(
-        middleware.dispatch(_request("/api/v1/layers", "Bearer token"), next_handler)
+        middleware.dispatch(_request("/api/v1/layers", authorization="Bearer jwt"), _next_handler)
     )
     assert response.status_code == 403
+
+
+def test_invalid_token_and_authorization_outage_fail_closed():
+    middleware = JWTAuthenticationMiddleware(lambda _: Response(), settings=_settings())
+
+    class InvalidTokenResponse:
+        status_code = 401
+
+    middleware._authorize = lambda *_: InvalidTokenResponse()
+    assert asyncio.run(
+        middleware.dispatch(_request("/api/v1/layers", authorization="Bearer expired"), _next_handler)
+    ).status_code == 401
+
+    def unavailable(*_):
+        raise requests.Timeout()
+
+    middleware._authorize = unavailable
+    assert asyncio.run(
+        middleware.dispatch(_request("/api/v1/layers", authorization="Bearer jwt"), _next_handler)
+    ).status_code == 503

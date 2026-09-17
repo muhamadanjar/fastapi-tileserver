@@ -247,6 +247,7 @@ def test_api_guest_isolation_admin_guard_and_extra_reference(workflow):
     with TestClient(app) as client:
         assert client.get('/api/v1/analysis-workspace/references').status_code == 200
         assert client.get('/api/v1/analysis-references/ref').status_code == 401
+        app.dependency_overrides[endpoints.require_admin] = lambda: None
         assert client.post('/api/v1/analysis-workspace/inputs', files={'file': ('a.zip', archive(path))}).status_code == 401
         headers = {'X-Analysis-Session': 'a' * 64}
         response = client.post('/api/v1/analysis-workspace/inputs', headers=headers, files={'file': ('a.zip', archive(path))})
