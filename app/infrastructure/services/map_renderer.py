@@ -254,6 +254,7 @@ class FileBackedMapRenderer:
         if self._gs is None:
             self._gs = GeoServerService(
                 url=settings.GEOSERVER_URL,
+                rest_url=settings.GEOSERVER_REST_URL,
                 username=settings.GEOSERVER_USER,
                 password=settings.GEOSERVER_PASSWORD,
                 workspace=settings.GEOSERVER_WORKSPACE,

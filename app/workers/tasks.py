@@ -13,7 +13,9 @@ from app.infrastructure.services.csw_sync import sync_layer
 from app.domain.models import ImportStatus, JobStatus, Layer, LayerType
 from app.core.utils import slugify, generate_unique_code_sync
 from app.domain.upload_utils import prepare_source_path
-from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
+from app.infrastructure.services.upload_artifact_client import (
+    UploadArtifactClient,
+)
 
 
 def _make_progress_callback(layer_id: str, upload_id: str):
@@ -285,11 +287,16 @@ def publish_geoserver_task(self, upload_id: str, layer_id: str, code: str):
 
         svc = GeoServerService(
             url=settings.GEOSERVER_URL,
+            rest_url=settings.GEOSERVER_REST_URL,
             username=settings.GEOSERVER_USER,
             password=settings.GEOSERVER_PASSWORD,
             workspace=settings.GEOSERVER_WORKSPACE,
             wms_url=settings.GEOSERVER_WMS_URL,
         )
+        # Always materialize the artifact first. GeoServer's file.shp endpoint
+        # receives the ZIP bytes directly; GEOSERVER_REST_URL can point at a
+        # private/origin REST listener so this upload does not traverse a
+        # browser/Vercel proxy.
         source_ctx = (
             UploadArtifactClient().materialize(artifact_id, filename or "artifact.bin")
             if artifact_id is not None
