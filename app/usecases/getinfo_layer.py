@@ -8,9 +8,12 @@ from typing import Optional
 
 from app.core.exceptions import LayerSourceUnavailableError
 from app.domain.models import Layer
+from app.domain.ports import (
+    LayerRepositoryPort,
+    UploadArtifactClientPort,
+    UploadSessionRepositoryPort,
+)
 from app.domain.schemas import FeatureQueryResponse
-from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
-from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
 from app.usecases.getinfo_adapters import (
     EsriImageserverAdapter,
     EsriMapserverAdapter,
@@ -28,9 +31,15 @@ class QueryLayerFeaturesUseCase:
     this usecase only resolves the right adapter and applies shared post-processing.
     """
 
-    def __init__(self, layer_repo: LayerRepository, session_repo: UploadSessionRepository):
+    def __init__(
+        self,
+        layer_repo: LayerRepositoryPort,
+        session_repo: UploadSessionRepositoryPort,
+        artifact_client: Optional[UploadArtifactClientPort] = None,
+    ):
         self.layer_repo = layer_repo
         self.session_repo = session_repo
+        self.artifact_client = artifact_client
 
     async def execute(
         self,
@@ -75,7 +84,9 @@ class QueryLayerFeaturesUseCase:
             suffix = Path(session.filename or "source").suffix
             dest = cache_dir / f"{artifact_id}{suffix}"
             if not dest.exists():
-                client = UploadArtifactClient()
+                client = self.artifact_client
+                if client is None:
+                    raise LayerSourceUnavailableError("Adapter sumber artifact tidak dikonfigurasi.")
                 try:
                     with client.materialize(artifact_id, session.filename or "artifact.bin") as tmp:
                         dest.write_bytes(tmp.read_bytes())

@@ -44,6 +44,7 @@ class ReferenceAnalysisJob(SQLModel, table=True):
     owner_hash: str = Field(index=True)
     reference_id: str  # Historical identity survives deletion of the source.
     reference_config: dict = Field(sa_column=Column(JSON, nullable=False))
+    operation: str = Field(default="intersect")
     status: str = Field(default="pending", index=True)
     task_id: str
     created_at: datetime = Field(sa_column=Column(DateTime(timezone=True), nullable=False))

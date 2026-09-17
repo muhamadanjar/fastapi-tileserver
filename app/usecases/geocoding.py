@@ -15,6 +15,13 @@ from shapely.geometry import shape
 
 from app.core.exceptions import LayerNotFoundError, LayerSourceUnavailableError
 from app.domain.models import Layer
+from app.domain.ports import (
+    FeatureRepositoryPort,
+    LayerRepositoryPort,
+    NominatimClientPort,
+    UploadArtifactClientPort,
+    UploadSessionRepositoryPort,
+)
 from app.domain.schemas import (
     ForwardGeocodeResponse,
     ForwardMatch,
@@ -23,12 +30,6 @@ from app.domain.schemas import (
     GlobalGeocodeResponse,
     ReverseGeocodeResponse,
 )
-from app.infrastructure.db.repository import (
-    FeatureRepository,
-    LayerRepository,
-    UploadSessionRepository,
-)
-from app.infrastructure.services.nominatim_client import NominatimClient
 from app.usecases.layer_source import resolve_layer_source_path
 
 EARTH_RADIUS_M = 6_371_000.0
@@ -115,15 +116,19 @@ class GeocodingUseCase:
 
     def __init__(
         self,
-        layer_repo: LayerRepository,
-        session_repo: UploadSessionRepository,
-        feature_repo: Optional[FeatureRepository] = None,
-        nominatim: Optional[NominatimClient] = None,
+        layer_repo: LayerRepositoryPort,
+        session_repo: UploadSessionRepositoryPort,
+        feature_repo: Optional[FeatureRepositoryPort] = None,
+        nominatim: Optional[NominatimClientPort] = None,
+        artifact_client: Optional[UploadArtifactClientPort] = None,
     ):
         self.layer_repo = layer_repo
         self.session_repo = session_repo
         self.feature_repo = feature_repo
-        self.nominatim = nominatim or NominatimClient()
+        if nominatim is None:
+            raise ValueError("GeocodingUseCase requires a NominatimClientPort")
+        self.nominatim = nominatim
+        self.artifact_client = artifact_client
 
     # --- reverse: feature -> address ---
 
@@ -168,7 +173,7 @@ class GeocodingUseCase:
     async def _local_vector_point(
         self, layer: Layer, index: int, authorization: Optional[str]
     ) -> tuple[float, float]:
-        source = await resolve_layer_source_path(layer, self.session_repo, authorization)
+        source = await resolve_layer_source_path(layer, self.session_repo, authorization, client=self.artifact_client)
         if not source:
             raise LayerSourceUnavailableError("File sumber layer tidak tersedia.")
         gdf = await asyncio.to_thread(self._read_wgs84, source)
@@ -270,7 +275,7 @@ class GeocodingUseCase:
                 layer, lon, lat, radius_m, limit,
             )
         if layer.file_type == "vector":
-            source = await resolve_layer_source_path(layer, self.session_repo, authorization)
+            source = await resolve_layer_source_path(layer, self.session_repo, authorization, client=self.artifact_client)
             if not source:
                 raise LayerSourceUnavailableError("File sumber layer tidak tersedia.")
             gdf = await asyncio.to_thread(self._read_wgs84, source)

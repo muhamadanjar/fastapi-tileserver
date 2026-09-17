@@ -98,8 +98,9 @@ async def test_get_info_renews_artifact_access_with_editor_authorization(tmp_pat
             calls.append(("release", artifact_id, lease_id))
 
     monkeypatch.setenv("ARTIFACT_CACHE_DIR", str(tmp_path))
-    monkeypatch.setattr(getinfo_layer, "UploadArtifactClient", _ArtifactClient)
-    usecase = QueryLayerFeaturesUseCase(_StubRepo(layer), _StubRepo(session))
+    usecase = QueryLayerFeaturesUseCase(
+        _StubRepo(layer), _StubRepo(session), artifact_client=_ArtifactClient()
+    )
 
     async with usecase._source_context(layer, authorization="Bearer editor-token") as source_path:
         assert source_path.read_bytes() == b"raster-source"

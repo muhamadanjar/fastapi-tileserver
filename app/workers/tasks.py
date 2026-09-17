@@ -12,7 +12,7 @@ from app.infrastructure.services.tiling_service import TilingService
 from app.infrastructure.services.csw_sync import sync_layer
 from app.domain.models import ImportStatus, JobStatus, Layer, LayerType
 from app.core.utils import slugify, generate_unique_code_sync
-from app.infrastructure.services.file_service import FileService
+from app.domain.upload_utils import prepare_source_path
 from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
 
 
@@ -423,7 +423,7 @@ def process_tiling_task(self, upload_id: str, layer_id: str, file_type: str, sou
         with source_context as materialized_path:
             prepared_path = materialized_path
             if artifact_id:
-                prepared_path, _ = FileService.prepare_source_path(Path(materialized_path))
+                prepared_path, _ = prepare_source_path(Path(materialized_path))
             bounds = TilingService.process_tiling(
                 file_type,
                 Path(prepared_path),
@@ -665,7 +665,7 @@ def clean_up_task(self, layer_id: str):
 
 @celery_app.task(bind=True, max_retries=2)
 def generate_mbtiles_task(self, layer_id: str):
-    from app.core.mbtiles import pack_tile_pyramid
+    from app.infrastructure.mbtiles import pack_tile_pyramid
     from app.core.config import settings
 
     with db.get_session() as session:

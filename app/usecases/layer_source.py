@@ -6,14 +6,14 @@ from typing import Optional
 
 from app.core.exceptions import LayerSourceUnavailableError
 from app.domain.models import Layer
-from app.infrastructure.db.repository import UploadSessionRepository
-from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
+from app.domain.ports import UploadArtifactClientPort, UploadSessionRepositoryPort
 
 
 async def resolve_layer_source_path(
     layer: Layer,
-    session_repo: UploadSessionRepository,
+    session_repo: UploadSessionRepositoryPort,
     authorization: Optional[str] = None,
+    client: Optional[UploadArtifactClientPort] = None,
 ) -> Optional[Path]:
     """Resolve the local source file for a layer (downloads artifact:// when needed).
 
@@ -36,7 +36,8 @@ async def resolve_layer_source_path(
     cache_dir.mkdir(parents=True, exist_ok=True)
     destination = cache_dir / f"{artifact_id}{Path(session.filename or 'source').suffix}"
     if not destination.exists():
-        client = UploadArtifactClient()
+        if client is None:
+            raise LayerSourceUnavailableError("Adapter sumber artifact tidak dikonfigurasi.")
         try:
             with client.materialize(artifact_id, session.filename or "artifact.bin") as source:
                 destination.write_bytes(source.read_bytes())

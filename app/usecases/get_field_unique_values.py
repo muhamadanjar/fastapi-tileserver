@@ -5,15 +5,16 @@ from typing import Optional
 import geopandas as gpd
 
 from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError
+from app.domain.ports import LayerRepositoryPort, UploadArtifactClientPort, UploadSessionRepositoryPort
 from app.domain.schemas import FieldUniqueValuesResponse
-from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
 from app.usecases.artifact_source import artifact_source_context
 
 
 class GetFieldUniqueValuesUseCase:
-    def __init__(self, layer_repo: LayerRepository, session_repo: UploadSessionRepository):
+    def __init__(self, layer_repo: LayerRepositoryPort, session_repo: UploadSessionRepositoryPort, artifact_client: Optional[UploadArtifactClientPort] = None):
         self.layer_repo = layer_repo
         self.session_repo = session_repo
+        self.artifact_client = artifact_client
 
     async def execute(
         self,
@@ -41,6 +42,7 @@ class GetFieldUniqueValuesUseCase:
             session.filename,
             authorization,
             f"categorical-values:{layer.id}",
+            client=self.artifact_client,
         ) as source_path:
             if not source_path:
                 raise LayerFieldsUnavailableError(layer.layer_type, reason="Source file not found.")

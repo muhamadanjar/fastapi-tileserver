@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional
 
-from app.core.response import APIResponse
+from app.presentation.response import APIResponse
 from app.core.config import settings
 from app.core.utils import slugify
 from app.domain.schemas import (

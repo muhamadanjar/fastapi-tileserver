@@ -56,15 +56,16 @@ Semua route berada di `/api/v1`.
 | GET /analysis-workspace/references | Pilihan acuan dan batas upload |
 | POST /analysis-workspace/inputs | Multipart field `file` ZIP SHP |
 | DELETE /analysis-workspace/inputs/{id} | Hapus input dan hasil terminal |
-| POST /analysis-workspace/jobs | JSON `input_id`, `reference_id` |
+| POST /analysis-workspace/jobs | JSON `input_id`, `reference_id` `operation` (intersect/clip/difference/spatial_join) |
 | GET /analysis-workspace/jobs | Riwayat sementara sesi browser |
 | GET /analysis-workspace/jobs/{id} | pending/processing/done/failed |
 | GET /analysis-workspace/jobs/{id}/rows | offset/limit; rincian, summary, warnings, reference |
 | GET /analysis-workspace/jobs/{id}/download?format=geojson | Format geojson, csv, shp |
+| POST /analysis-workspace/jobs/{id}/save | Simpan hasil sebagai layer permanen (idempoten) |
 | GET/PUT/DELETE /analysis-references/{layer_id} | Baca/simpan/lepas konfigurasi admin |
 
 Semua endpoint workspace selain daftar acuan memerlukan `X-Analysis-Session`.
-Browser membuat token acak 32 byte dan menyimpannya di localStorage. Server
+Browser membuat token acak 48 karakter (64 byte acak) dan menyimpannya di localStorage. Server
 menyimpan hash, memeriksa kepemilikan untuk setiap akses; UUID saja tidak cukup.
 Token merupakan kredensial akses hasil: jangan menaruhnya di URL. Tamu dan
 pengguna login memakai mekanisme browser yang sama, tanpa sinkronisasi akun.
@@ -76,10 +77,26 @@ hanya untuk lingkungan pengembangan/pengujian. PUT menerima `name`,
 `category_field`, `attributes` (maksimal 100). GET tetap mengembalikan konfigurasi
 dan source_error jika sumber rusak, agar admin dapat melepaskan acuan tersebut.
 
+## Operasi analisis
+
+`operation` pada POST /jobs menentukan cara sumber dipotong dengan acuan:
+
+| operation | Hasil | Kategori | Atribut |
+|---|---|---|---|
+| intersect (default) | Sumber yang beririsan dengan acuan, dipotong per poligon acuan | Dari acuan | Sumber + acuan |
+| clip | Irisan saja; kontak batas dibuang | Dari acuan | Sumber + acuan |
+| difference | Bagian sumber di luar acuan | Kosong (label "Di luar acuan") | Sumber saja |
+| spatial_join | Geometri sumber utuh, satu baris per acuan yang beririsan; tanpa acuan -> "Tanpa acuan" | Dari acuan | Sumber + acuan |
+
+Kontrak hasil semua operasi sama (rows, summary, warnings, measurement), sehingga
+tampilan dan laporan tidak berubah. spatial_join dapat menghitung objek berulang bila
+satu objek beririsan beberapa poligon acuan. Operasi disimpan per pekerjaan, bukan
+pada konfigurasi acuan.
+
 ## Menjalankan layanan
 
 Terapkan migrasi model pada database layanan dengan `alembic upgrade head`
-(revisi fitur 0011), lalu jalankan API, worker Celery dan tepat satu scheduler
+(revisi fitur 0012), lalu jalankan API, worker Celery dan tepat satu scheduler
 Beat. API dan worker harus berbagi UPLOAD_DIR. production.yml menyertakan beat
 pada volume tileserver-data; broker/backend mengikuti konfigurasi existing.
 Tidak ada deployment atau migrasi database produksi yang dilakukan otomatis.

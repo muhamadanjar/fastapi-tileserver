@@ -6,6 +6,8 @@ from app.core.exceptions import LayerNotFoundError, LayerSourceUnavailableError
 from app.domain.schemas import GlobalGeocodeResponse
 from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import FeatureRepository, LayerRepository, UploadSessionRepository
+from app.infrastructure.wiring import default_nominatim_client
+from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
 from app.usecases.geocoding import GeocodingUseCase, LayerNotGeocodableError
 
 router = APIRouter(prefix="/geocoding", tags=["geocoding"])
@@ -33,7 +35,7 @@ async def global_geocoding(
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
     feature_repo: FeatureRepository = Depends(_get_feature_repo),
 ):
-    usecase = GeocodingUseCase(layer_repo, session_repo, feature_repo)
+    usecase = GeocodingUseCase(layer_repo, session_repo, feature_repo, nominatim=default_nominatim_client(), artifact_client=UploadArtifactClient())
     try:
         return await usecase.forward_global(text, radius_m=radius, limit=limit, authorization=authorization)
     except LayerNotFoundError as exc:

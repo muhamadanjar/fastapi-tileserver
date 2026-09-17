@@ -2,6 +2,7 @@ import io
 import json
 import zipfile
 from datetime import timedelta
+from pathlib import Path
 
 import geopandas as gpd
 import pytest
@@ -16,7 +17,9 @@ from app.analysis.reference_intersection import intersect_reference, validate_fr
 from app.application.reference_analysis import ReferenceAnalysis, AnalysisError, now, guard_source_delete
 from app.core.config import Settings
 from app.domain.models import Layer, UploadSession, AnalysisUpload, AnalysisReference, ReferenceAnalysisJob, ActiveAnalysisSource
+from app.infrastructure.services.analysis_reference_source import load_reference
 from app.infrastructure.services.reference_analysis_files import read_shapefile_archive, export_results
+from app.infrastructure.wiring import default_analysis_reference_source, default_analysis_storage
 from app.presentation.router.api.v1.endpoints import reference_analysis as endpoints
 
 
@@ -51,7 +54,13 @@ def workflow(tmp_path):
     session.add(Layer(id='ref', filename='Pola ruang', file_type='vector', layer_type='geojson', tile_url_template='/public', upload_session_id='upload-ref', is_active=True, is_visible=True))
     session.commit()
     queued = []
-    svc = ReferenceAnalysis(session, settings, lambda *args: queued.append(args))
+    svc = ReferenceAnalysis(
+        session,
+        settings,
+        lambda *args: queued.append(args),
+        source=default_analysis_reference_source(),
+        storage=default_analysis_storage(),
+    )
     svc.configure('ref', {'name': 'Pola ruang', 'category_field': 'zone', 'attributes': ['zone']})
     yield svc, session, tmp_path, queued
     session.close()
@@ -146,7 +155,7 @@ def test_full_lifecycle_and_exports(workflow):
     item = uploaded(svc, path)
     assert session.exec(select(Layer)).all()[0].is_visible
     assert len(session.exec(select(Layer)).all()) == 1
-    job = svc.start(item['id'], 'ref', 'owner')
+    job = svc.start(item['id'], 'ref', 'owner', operation='clip')
     assert queued and session.get(ActiveAnalysisSource, job['id'])
     with pytest.raises(AnalysisError) as error:
         svc.job(job['id'], 'another-browser')
@@ -154,6 +163,7 @@ def test_full_lifecycle_and_exports(workflow):
     svc.execute(job['id'])
     finished = svc.job(job['id'], 'owner')
     assert finished['status'] == 'done', finished
+    assert finished['operation'] == 'clip'
     assert not session.get(ActiveAnalysisSource, job['id'])
     assert finished['source_version']
     from datetime import datetime
@@ -166,6 +176,13 @@ def test_full_lifecycle_and_exports(workflow):
     assert 'area_ha' in exported.columns and 'src_id' in exported.columns
     with zipfile.ZipFile(directory / 'csv.zip') as bundle:
         assert set(bundle.namelist()) == {'details.csv', 'summary.csv'}
+    saved = svc.save(job['id'], 'owner')
+    assert saved['layer_id'] == f"reference-analysis-{job['id']}"
+    assert svc.save(job['id'], 'owner')['layer_id'] == saved['layer_id']
+    permanent = session.get(Layer, saved['layer_id'])
+    assert permanent and permanent.is_active and permanent.is_visible
+    saved_upload = session.get(UploadSession, permanent.upload_session_id)
+    assert saved_upload and Path(saved_upload.final_path).is_file()
     svc.remove_reference('ref')
     layer = session.get(Layer, 'ref')
     guard_source_delete(session, layer.id)
@@ -234,14 +251,18 @@ def test_api_guest_isolation_admin_guard_and_extra_reference(workflow):
         headers = {'X-Analysis-Session': 'a' * 64}
         response = client.post('/api/v1/analysis-workspace/inputs', headers=headers, files={'file': ('a.zip', archive(path))})
         assert response.status_code == 201, response.text
-        body = {'input_id': response.json()['id'], 'reference_id': 'ref'}
+        body = {'input_id': response.json()['id'], 'reference_id': 'ref', 'operation': 'spatial_join'}
         assert client.post('/api/v1/analysis-workspace/jobs', headers=headers, json={**body, 'reference_ids': ['ref', 'second']}).status_code == 422
         response = client.post('/api/v1/analysis-workspace/jobs', headers=headers, json=body)
         assert response.status_code == 202, response.text
         job_id = response.json()['id']
+        assert response.json()['operation'] == 'spatial_join'
         assert client.get(f'/api/v1/analysis-workspace/jobs/{job_id}', headers={'X-Analysis-Session': 'b' * 64}).status_code == 404
         svc.execute(job_id)
         assert client.get(f'/api/v1/analysis-workspace/jobs/{job_id}/rows', headers=headers).json()['total'] == 2
+        saved = client.post(f'/api/v1/analysis-workspace/jobs/{job_id}/save', headers=headers)
+        assert saved.status_code == 200, saved.text
+        assert saved.json()['layer_id'] == f'reference-analysis-{job_id}'
         for kind in ['geojson', 'csv', 'shp']:
             assert client.get(f'/api/v1/analysis-workspace/jobs/{job_id}/download?format={kind}', headers=headers).status_code == 200
 
@@ -316,3 +337,38 @@ def test_admin_can_detach_unreadable_source(workflow):
         assert response.json()['config']['layer_id'] == 'ref'
         assert client.delete('/api/v1/analysis-references/ref').status_code == 200
         assert session.get(AnalysisReference, 'ref') is None
+
+def test_reference_operations_clip_difference_spatial_join(workflow):
+    from app.analysis.reference_operations import run_reference_operation, OPERATIONS
+    svc, session, path, _ = workflow
+    reference, _ = load_reference(session, session.get(Layer, 'ref'), svc.settings)
+    source = validate_frame(frame([box(0, 0, 2, 1)]))
+    assert set(OPERATIONS) == {"intersect", "clip", "difference", "spatial_join"}
+
+    clipped = run_reference_operation("clip", source, reference, "zone", ["zone"], "run")
+    assert {f["properties"]["relation"] for f in clipped["features"]} == {"intersection"}
+    assert {f["properties"]["category_label"] for f in clipped["features"]} == {"Housing", "Kategori belum diisi"}
+    assert sum(s["area_m2"] for s in clipped["summary"]) == pytest.approx(measure(box(0, 0, 2, 1), 2), rel=1e-6)
+
+    diff = run_reference_operation("difference", source, reference, "zone", ["zone"], "run")
+    # Source is fully covered by the two reference polygons, so nothing is left outside.
+    assert diff["features"] == [] and diff["summary"] == [] and diff["warnings"]
+
+    uncovered = validate_frame(frame([box(0, 0, 3, 1)]))
+    diff = run_reference_operation("difference", uncovered, reference, "zone", ["zone"], "run")
+    assert [f["properties"]["relation"] for f in diff["features"]] == ["difference"]
+    assert diff["features"][0]["properties"]["category_label"] == "Di luar acuan"
+    assert diff["summary"][0]["area_m2"] == pytest.approx(measure(box(2, 0, 3, 1), 2), rel=1e-6)
+
+    joined = run_reference_operation("spatial_join", source, reference, "zone", ["zone"], "run")
+    housing = [f for f in joined["features"] if f["properties"]["category"] == "Housing"]
+    assert housing and housing[0]["properties"]["reference_attributes"] == {"zone": "Housing"}
+    # Whole source geometry is kept and duplicated per matching reference polygon.
+    assert all(f["properties"]["area_m2"] == pytest.approx(measure(box(0, 0, 2, 1), 2), rel=1e-6) for f in joined["features"])
+    assert sum(s["object_count"] for s in joined["summary"]) == len(joined["features"]) == 2
+
+def test_reference_operation_rejects_unknown(workflow):
+    from app.analysis.reference_operations import run_reference_operation
+    svc, session, path, _ = workflow
+    with pytest.raises(ValueError):
+        run_reference_operation("union", gpd.GeoDataFrame(), gpd.GeoDataFrame(), "zone", [], "run")

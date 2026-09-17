@@ -18,6 +18,23 @@ def _read(path):
     return gpd.read_file(path)
 
 
+def repair_geometry(frame):
+    """Repair common polygon-ring defects (self-intersection) before validation.
+
+    buffer(0) removes bowtie/sliver self-crossings while keeping Polygon/MultiPolygon
+    types and near-identical area; validated on production sources (114/1234 fixed).
+    ponytail: buffer(0) only; make_valid fallback if non-ring invalid types appear.
+    """
+    mask = ~frame.geometry.is_valid
+    if not mask.any():
+        return frame
+    frame = frame.copy()
+    frame.loc[mask, "geometry"] = frame.geometry[mask].map(
+        lambda g: g.buffer(0) if g is not None and not g.is_empty else g
+    )
+    return frame
+
+
 def load_reference(session, layer, settings):
     project_id = (layer.file_metadata or {}).get("project_id")
     if project_id:
@@ -41,6 +58,7 @@ def load_reference(session, layer, settings):
             after = path.stat()
             if (before.st_mtime_ns, before.st_size, before.st_ino) != (after.st_mtime_ns, after.st_size, after.st_ino):
                 raise ValueError("Sumber berubah saat dibaca. Jalankan ulang analisis.")
+    frame = repair_geometry(frame)
     frame = validate_frame(frame, label="Acuan", polygon_only=True, max_vertices=settings.ANALYSIS_MAX_VERTICES * 10)
     digest = hashlib.sha256()
     # Hash actual contents, not object-array memory addresses or mutable timestamps.

@@ -8,7 +8,7 @@ import pytest
 from shapely.geometry import Point
 from sqlalchemy import create_engine, text
 
-from app.infrastructure.services.file_service import FileService
+from app.domain.upload_utils import allowed_file
 from app.infrastructure.services.shapefile_import_service import (
     ShapefileImportError,
     ShapefileValidationError,
@@ -141,8 +141,8 @@ def test_import_rejects_non_postgresql_backend_before_reading_archive(tmp_path):
 
 def test_raw_shp_upload_is_rejected_but_zip_is_supported():
     with pytest.raises(Exception):
-        FileService.allowed_file("dataset.shp")
-    assert FileService.allowed_file("dataset.zip") == "vector"
+        allowed_file("dataset.shp")
+    assert allowed_file("dataset.zip") == "vector"
 
 
 def test_postgis_import_end_to_end_when_database_is_configured(tmp_path):
