@@ -138,3 +138,43 @@ dan tidak berarti objek tidak beririsan dengan acuan.
 Ringkasan hasil irisan per kategori dengan jumlah titik, panjang, dan luas
 dipisahkan. Bagian yang sama dalam kategori yang sama dihitung sekali per
 objek unggahan; kategori berbeda tetap independen.
+
+## Kodefikasi Perencanaan (Planning Codebook)
+
+Kamus tabular perencanaan yang menjadi single source of truth arti kode peta. Dikelola di `lahat_api:8090` (`planning_catalog` + `classification` + `additional_domain`/`zoning_regulation`), bukan di tileserver. Tileserver tidak menduplikasi tabelnya; hanya melakukan lookup runtime bila diperlukan.
+_Avoid_: Tabel kode di tileserver, duplikasi matrix.
+
+## Planning Catalog
+
+Entitas katalog perencanaan di `lahat_api` (`planning_catalog.code`, `planning_level`, `document_type` RTRW/RDTR, `plan_component` PR/SR). Menjadi konteks katalog untuk resolve kode (mis. `RDTR_LAHAT_2024`).
+_Avoid_: Layer code, file_metadata code.
+
+## Classification (Kode Pola Ruang)
+
+Baris kodefikasi untuk satu domain dalam satu katalog & komponen: `classification.domain_code` (mis. `ORDE01`, `KODKWS`, `JNSRPR`), `name` readable, `area_code`, `classification_key` unique, `parent_id` hierarki. `domain_code` adalah canonical join key untuk Get Info; `area_code`/`classification_key`/`zone_identifier` adalah atribut turunan.
+_Avoid_: Raw KODE, area_code sebagai kunci.
+
+## Kode Pola Ruang (Pola Ruang Code)
+
+Nilai kode pada atribut fitur peta pola ruang (mis. `ORDE01` pada field `KODE`). Tidak readable tanpa join ke `classification.name`. Selalu di-resolve bersama konteks `catalog_code` + `plan_component`.
+_Avoid_: Label, readable name.
+
+## Kodefikasi Layer Config
+
+Konfigurasi per-Layer di tileserver `Layer.file_metadata.kodefikasi` yang memetakan field sumber peta ke katalog kodefikasi: `{ code_field, catalog_code, plan_component, enrich_fields[] }`. `null` berarti layer tidak di-enrich. Dikelola admin tileserver (`tiles.manage`), bukan admin `lahat_api`.
+_Avoid_: Global kodefikasi switch, hardcode field `KODE`.
+
+## Enriched Get Info (Get Info Terperkaya)
+
+Respons `GET /layers/{id}/features` yang telah diperkaya dengan label kodefikasi secara additive: field raw tetap (`KODE: ORDE01`) plus `KODE_label`/`KODE_description` dan metadata `_enrichment { status, catalog, resolved, unresolved }`. Gagal enrichment tidak menggagalkan Get Info — fallback ke raw dengan `status: degraded` atau `unknown_code`.
+_Avoid_: Replace raw code, error 500 saat lahat_api down.
+
+## LahatKodefikasiClient
+
+Infrastructure adapter di tileserver yang melakukan batch resolve kode ke `lahat_api:8090` (`POST /classifications/resolve`) dengan auth berlapis JWT + OAuth2 client_credentials, timeout 800ms + 1 retry, cache in-memory TTL 60s. Di-inject sebagai `LahatKodefikasiPort` ke `QueryLayerFeaturesUseCase`.
+_Avoid_: Direct DB join, frontend aggregation.
+
+## Degraded Enrichment
+
+Kondisi ketika `lahat_api` tidak tersedia/timeout/401 dan Get Info tetap mengembalikan raw `properties` dengan `_enrichment.status = "degraded"` (bukan error). Unknown code adalah kasus terpisah: `status = "ok"` tapi `*_label = null` + `unresolved` bertambah.
+_Avoid_: Unknown code = error, degraded = 500.

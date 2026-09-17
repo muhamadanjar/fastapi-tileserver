@@ -128,6 +128,13 @@ class LayerResponse(BaseModel):
     default_style_name: Optional[str] = None
 
 
+class KodefikasiRequest(BaseModel):
+    code_field: Optional[str] = Field(default=None, max_length=100, description="Primary field that holds kode, e.g. KODE")
+    catalog_code: str = Field(min_length=1, max_length=30, description="Planning catalog code, e.g. RDTR_LAHAT_2024")
+    plan_component: str = Field(default="PR", pattern="^(PR|SR)$")
+    enrich_fields: Optional[list[str]] = Field(default=None, description="Additional fields to enrich, e.g. [KODKWS, JNSRPR]")
+
+
 class PatchLayerRequest(BaseModel):
     file_metadata: Optional[dict] = None
     filename: Optional[str] = None

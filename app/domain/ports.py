@@ -156,3 +156,15 @@ class AnalysisStoragePort(Protocol):
     def export_results(self, directory: Path, result: Any) -> None: ...
 
 AnalysisTaskEnqueuer = Callable[..., Any]
+
+
+@runtime_checkable
+class LahatKodefikasiPort(Protocol):
+    async def resolve(
+        self,
+        catalog_code: str,
+        plan_component: str,
+        codes: list[str],
+    ) -> dict[str, dict]: ...
+    # returns dict[domain_code -> {name, description, area_code, classification_key, ...}]
+    # empty dict on degraded / not found; caller handles fallback
