@@ -3,7 +3,7 @@ from unittest.mock import Mock
 import pytest
 from fastapi import HTTPException
 
-from app.api.v1.endpoints.upload import start_shapefile_import
+from app.presentation.router.api.v1.endpoints.upload import start_shapefile_import
 from app.domain.models import ImportStatus, JobStatus, UploadSession
 from app.domain.schemas import JobStatusResponse, ShapefileImportedTable, ShapefileImportStatus
 from app.usecases.shapefile_import_dispatch import dispatch_shapefile_import
@@ -39,50 +39,41 @@ def _upload(filename: str) -> UploadSession:
 
 @pytest.mark.asyncio
 async def test_zip_dispatch_persists_task_identity_before_enqueue(monkeypatch):
-    from app.workers import tasks
-
-    apply_async = Mock()
-    monkeypatch.setattr(tasks.import_shapefile_task, "apply_async", apply_async)
+    enqueue = Mock()
     repo = FakeUploadRepository()
 
-    task_id = await dispatch_shapefile_import(_upload("Batas Desa.zip"), repo)
+    task_id = await dispatch_shapefile_import(_upload("Batas Desa.zip"), repo, enqueue)
 
     assert task_id
     assert repo.queued == ("upload-1", task_id, "batas_desa_a1b2c3d4")
-    apply_async.assert_called_once_with(kwargs={"upload_id": "upload-1"}, task_id=task_id)
+    enqueue.assert_called_once_with("upload-1", task_id)
 
 
 @pytest.mark.asyncio
 async def test_non_zip_does_not_enqueue(monkeypatch):
-    from app.workers import tasks
-
-    apply_async = Mock()
-    monkeypatch.setattr(tasks.import_shapefile_task, "apply_async", apply_async)
+    enqueue = Mock()
     repo = FakeUploadRepository()
 
-    task_id = await dispatch_shapefile_import(_upload("dataset.geojson"), repo)
+    task_id = await dispatch_shapefile_import(_upload("dataset.geojson"), repo, enqueue)
 
     assert task_id is None
     assert repo.queued is None
-    apply_async.assert_not_called()
+    enqueue.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_dispatch_is_idempotent_for_an_already_queued_upload(monkeypatch):
-    from app.workers import tasks
-
-    apply_async = Mock()
-    monkeypatch.setattr(tasks.import_shapefile_task, "apply_async", apply_async)
+    enqueue = Mock()
     repo = FakeUploadRepository()
     upload = _upload("dataset.zip")
     upload.import_status = ImportStatus.pending
     upload.import_task_id = "existing-task"
 
-    task_id = await dispatch_shapefile_import(upload, repo)
+    task_id = await dispatch_shapefile_import(upload, repo, enqueue)
 
     assert task_id == "existing-task"
     assert repo.queued is None
-    apply_async.assert_not_called()
+    enqueue.assert_not_called()
 
 
 @pytest.mark.asyncio

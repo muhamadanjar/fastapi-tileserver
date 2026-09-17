@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from app.api.v1.endpoints import layers
+from app.presentation.router.api.v1.endpoints import layers
 from app.usecases.get_layer_fields import GetLayerFieldsUseCase
 
 

@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = Field(default="redis://localhost:6379/0", env="REDIS_URL")
 
+    # Request rate limiting
+    RATE_LIMIT_ENABLED: bool = Field(default=True, env="RATE_LIMIT_ENABLED")
+    RATE_LIMIT_REQUESTS: int = Field(default=100, gt=0, env="RATE_LIMIT_REQUESTS")
+    RATE_LIMIT_WINDOW_SECONDS: int = Field(default=60, gt=0, env="RATE_LIMIT_WINDOW_SECONDS")
+    RATE_LIMIT_KEY_PREFIX: str = Field(
+        default="tileserver:rate-limit", env="RATE_LIMIT_KEY_PREFIX"
+    )
+
     # GeoServer
     GEOSERVER_URL: str = Field(default="http://localhost:8080/geoserver", env="GEOSERVER_URL")
     GEOSERVER_WMS_URL: str = Field(default="", env="GEOSERVER_WMS_URL")

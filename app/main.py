@@ -1,13 +1,17 @@
 import asyncio
 import logging
+import os
+import subprocess
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from redis import asyncio as aioredis
 
 from app.core.config import settings
 from app.presentation.middleware.auth_middleware import JWTAuthenticationMiddleware
 from app.presentation.middleware.analysis_upload_limit import AnalysisUploadLimitMiddleware
+from app.presentation.middleware.rate_limit import RateLimitMiddleware
 from app.presentation.router.api.v1.api import api_router
 from app.presentation.router.api.v1.endpoints.mvt import router as mvt_router
 from app.infrastructure.db.connection import db
@@ -19,8 +23,27 @@ from app.infrastructure.health import check_all_infrastructure
 
 _csw_logger = logging.getLogger("app.csw_init")
 
+
+def _current_version() -> str:
+    """Resolve tileserver version: env TILESERVER_VERSION > latest git tag > 0.0.0."""
+    env_version = os.getenv("TILESERVER_VERSION")
+    if env_version:
+        return env_version
+    try:
+        tag = subprocess.run(
+            ["git", "describe", "--tags", "--abbrev=0"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        return tag or "0.0.0"
+    except Exception:
+        return "0.0.0"
+
+
+__version__ = _current_version()
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
+    version=__version__,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
 )
 
@@ -75,6 +98,14 @@ async def _init_csw():
 # app.add_middleware(JWTAuthenticationMiddleware, settings=settings)
 app.add_middleware(AnalysisUploadLimitMiddleware, max_bytes=settings.ANALYSIS_MAX_UPLOAD_BYTES)
 app.add_middleware(
+    RateLimitMiddleware,
+    redis_client=aioredis.from_url(settings.REDIS_URL, decode_responses=True),
+    enabled=settings.RATE_LIMIT_ENABLED,
+    max_requests=settings.RATE_LIMIT_REQUESTS,
+    window_seconds=settings.RATE_LIMIT_WINDOW_SECONDS,
+    key_prefix=settings.RATE_LIMIT_KEY_PREFIX,
+)
+app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.get_cors_origins(),
     allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
@@ -91,7 +122,7 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def root():
-    return {"message": "FastAPI TileServer is running."}
+    return {"message": "FastAPI TileServer is running.", "version": __version__}
 
 
 @app.get("/health")

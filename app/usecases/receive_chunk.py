@@ -8,15 +8,16 @@ from app.core.exceptions import (
     SessionExpiredError,
 )
 from app.domain.models import JobStatus
+from app.domain.ports import ChunkStoragePort, UploadSessionRepositoryPort
 from app.domain.schemas import ChunkUploadResponse
-from app.infrastructure.db.repository import UploadSessionRepository
-from app.infrastructure.services.file_service import FileService
-from app.infrastructure.storage.chunk_storage import ChunkStorage
+from app.domain.upload_utils import get_unique_filename, prepare_source_path
+
 
 
 class ReceiveChunkUseCase:
-    def __init__(self, repo: UploadSessionRepository):
+    def __init__(self, repo: UploadSessionRepositoryPort, storage: ChunkStoragePort):
         self.repo = repo
+        self.storage = storage
 
     async def execute(
         self,
@@ -47,7 +48,7 @@ class ReceiveChunkUseCase:
                 f"Chunk {chunk_index}: expected {expected_size} bytes, got {len(chunk_data)}."
             )
 
-        storage = ChunkStorage()
+        storage = self.storage
         storage.write_chunk(upload_id, chunk_data, start)
 
         new_chunk_map = dict(session.chunk_map or {})
@@ -62,12 +63,12 @@ class ReceiveChunkUseCase:
         is_complete = new_uploaded_chunks >= session.total_chunks
 
         if is_complete:
-            unique_name = FileService.get_unique_filename(session.filename)
+            unique_name = get_unique_filename(session.filename)
             assembled_path = settings.UPLOAD_DIR / unique_name
 
             try:
                 storage.assemble_chunks(upload_id, assembled_path)
-                source_path, _ = FileService.prepare_source_path(assembled_path)
+                source_path, _ = prepare_source_path(assembled_path)
             except Exception as exc:
                 storage.cleanup_chunks(upload_id)
                 await self.repo.set_status(upload_id, JobStatus.failed, str(exc))

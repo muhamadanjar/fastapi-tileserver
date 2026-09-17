@@ -42,10 +42,11 @@ from app.analysis.overlay_operations import (
     union,
 )
 from app.domain.models import AnalysisResult, Feature, Layer
-from app.infrastructure.db.repository import (
-    SyncAnalysisResultRepository,
-    SyncLayerRepository,
-    SyncUploadSessionRepository,
+from app.domain.ports import (
+    AnalysisExportServicePort,
+    SyncAnalysisResultRepositoryPort,
+    SyncLayerRepositoryPort,
+    SyncUploadSessionRepositoryPort,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,11 +101,11 @@ class OverlayAnalysisUseCase:
 
     def __init__(
         self,
-        layer_repo: SyncLayerRepository,
-        analysis_repo: SyncAnalysisResultRepository,
-        upload_repo: SyncUploadSessionRepository,
+        layer_repo: SyncLayerRepositoryPort,
+        analysis_repo: SyncAnalysisResultRepositoryPort,
+        upload_repo: SyncUploadSessionRepositoryPort,
         get_project_features_fn: Callable[[str], list[Feature]],
-        export_service,  # AnalysisExportService
+        export_service: AnalysisExportServicePort,
         task_enqueuer: AnalysisTaskEnqueuer,
         ephemeral_ttl_hours: int = 24,
     ):

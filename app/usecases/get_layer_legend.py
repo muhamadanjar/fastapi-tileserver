@@ -5,15 +5,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from app.core.config import settings
 from app.core.exceptions import LayerNotFoundError
 from app.domain.models import Layer
+from app.domain.ports import LayerRepositoryPort, UploadArtifactClientPort, UploadSessionRepositoryPort, LegendRendererPort
 from app.domain.schemas import LayerLegendResponse
-from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
-from app.infrastructure.services.legend_renderer import (
-    is_stale,
-    raster_fingerprint,
-    render_raster_legend,
-    render_vector_legend,
-    vector_fingerprint,
-)
 from app.usecases.layer_source import resolve_layer_source_path
 
 # ponytail: strategy-per-type, tambah handler saat layer_type baru muncul.
@@ -26,9 +19,13 @@ class GetLayerLegendUseCase:
     """Resolve a legend for a layer: upstream-native URL for external services,
     locally pre-rendered PNG for local vector/raster layers."""
 
-    def __init__(self, layer_repo: LayerRepository, session_repo: Optional[UploadSessionRepository] = None):
+    def __init__(self, layer_repo: LayerRepositoryPort, session_repo: Optional[UploadSessionRepositoryPort] = None, renderer: Optional[LegendRendererPort] = None, artifact_client: Optional[UploadArtifactClientPort] = None):
         self.layer_repo = layer_repo
         self.session_repo = session_repo
+        if renderer is None:
+            raise ValueError("GetLayerLegendUseCase requires a LegendRendererPort")
+        self.renderer = renderer
+        self.artifact_client = artifact_client
 
     async def execute(self, layer_id: str) -> LayerLegendResponse:
         layer = await self.layer_repo.get_by_id(layer_id)
@@ -124,10 +121,10 @@ class GetLayerLegendUseCase:
 
     async def _local_vector(self, layer: Layer) -> LayerLegendResponse:
         style = (layer.file_metadata or {}).get("style")
-        fp = vector_fingerprint(style)
+        fp = self.renderer.vector_fingerprint(style)
         out = self._legend_path(layer)
-        if is_stale(out, fp):
-            await asyncio.to_thread(render_vector_legend, style, out, fp)
+        if self.renderer.is_stale(out, fp):
+            await asyncio.to_thread(self.renderer.render_vector_legend, style, out, fp)
         return LayerLegendResponse(
             layer_id=layer.id,
             layer_type=layer.layer_type,
@@ -140,14 +137,14 @@ class GetLayerLegendUseCase:
     async def _local_raster(self, layer: Layer) -> LayerLegendResponse:
         if not self.session_repo:
             return self._unavailable(layer, "Source file not found; cannot render raster legend")
-        source = await resolve_layer_source_path(layer, self.session_repo)
+        source = await resolve_layer_source_path(layer, self.session_repo, client=self.artifact_client)
         if not source:
             return self._unavailable(layer, "Source file not found; cannot render raster legend")
         try:
-            fp = raster_fingerprint(source)
+            fp = self.renderer.raster_fingerprint(source)
             out = self._legend_path(layer)
-            if is_stale(out, fp):
-                await asyncio.to_thread(render_raster_legend, source, out, fp)
+            if self.renderer.is_stale(out, fp):
+                await asyncio.to_thread(self.renderer.render_raster_legend, source, out, fp)
         except Exception as exc:
             return self._unavailable(layer, f"Could not render raster legend: {exc}")
         return LayerLegendResponse(

@@ -18,7 +18,7 @@ from app.infrastructure.services.geoserver_service import GeoServerService, GeoS
 from app.infrastructure.services.sld_builder import build_sld, ALLOWED_GEOMETRIES
 from app.core.utils import slugify, generate_unique_code
 from app.core.style_utils import merge_style_state
-from app.core.response import APIResponse
+from app.presentation.response import APIResponse
 from app.core.config import settings
 from app.workers.tasks import process_tiling_task, download_esri_layer_task, _release_artifact_lease as _release_artifact_lease_sync
 from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError, LayerSourceUnavailableError
@@ -31,6 +31,7 @@ from app.usecases.get_features_in_bbox import GetFeaturesInBboxUseCase
 from app.usecases.geocoding import GeocodingUseCase, LayerNotGeocodableError
 from app.usecases.artifact_source import artifact_source_context
 from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
+from app.infrastructure.wiring import default_legend_renderer, default_nominatim_client
 
 router = APIRouter(prefix="/layers", tags=["layers"])
 
@@ -172,7 +173,7 @@ async def get_layer_legend(
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
     try:
-        usecase = GetLayerLegendUseCase(layer_repo=repo, session_repo=session_repo)
+        usecase = GetLayerLegendUseCase(layer_repo=repo, session_repo=session_repo, renderer=default_legend_renderer(), artifact_client=UploadArtifactClient())
         return await usecase.execute(layer_id)
     except LayerNotFoundError as exc:
         raise HTTPException(status_code=404, detail=exc.message)
@@ -454,6 +455,7 @@ async def sync_layer_bbox(
                 session.filename,
                 authorization,
                 f"sync-bbox:{layer.id}",
+                client=UploadArtifactClient(),
             ) as source_path:
                 if not source_path:
                     raise HTTPException(status_code=422, detail="Source file no longer exists on disk")
@@ -948,7 +950,7 @@ async def get_layer_fields(
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
-    usecase = GetLayerFieldsUseCase(layer_repo, session_repo)
+    usecase = GetLayerFieldsUseCase(layer_repo, session_repo, artifact_client=UploadArtifactClient())
     try:
         return await usecase.execute(
             layer_id,
@@ -970,7 +972,7 @@ async def get_field_unique_values(
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
-    usecase = GetFieldUniqueValuesUseCase(layer_repo, session_repo)
+    usecase = GetFieldUniqueValuesUseCase(layer_repo, session_repo, artifact_client=UploadArtifactClient())
     try:
         return await usecase.execute(layer_id, field_name, authorization=authorization)
     except PermissionError as exc:
@@ -991,7 +993,7 @@ async def get_features_in_bbox(
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
-    usecase = GetFeaturesInBboxUseCase(layer_repo, session_repo)
+    usecase = GetFeaturesInBboxUseCase(layer_repo, session_repo, artifact_client=UploadArtifactClient())
     try:
         return await usecase.execute(
             layer_id, west, south, east, north, limit, authorization=authorization,
@@ -1011,7 +1013,7 @@ async def query_features(
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
-    usecase = QueryLayerFeaturesUseCase(layer_repo, session_repo)
+    usecase = QueryLayerFeaturesUseCase(layer_repo, session_repo, artifact_client=UploadArtifactClient())
     try:
         return await usecase.execute(layer_id, lon, lat, authorization=authorization)
     except LayerSourceUnavailableError as exc:
@@ -1030,7 +1032,7 @@ async def geocoding(
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
     feature_repo: FeatureRepository = Depends(_get_feature_repo),
 ):
-    usecase = GeocodingUseCase(layer_repo, session_repo, feature_repo)
+    usecase = GeocodingUseCase(layer_repo, session_repo, feature_repo, nominatim=default_nominatim_client(), artifact_client=UploadArtifactClient())
     try:
         if feature_index is not None:
             if text is not None:

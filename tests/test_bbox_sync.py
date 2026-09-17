@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from app.api.v1.endpoints import layers as layer_endpoints
+from app.presentation.router.api.v1.endpoints import layers as layer_endpoints
 from app.domain.schemas import ExternalLayerRequest, PatchLayerRequest, SyncBBoxRequest
 
 

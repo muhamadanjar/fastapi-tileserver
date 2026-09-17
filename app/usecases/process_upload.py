@@ -3,16 +3,15 @@ import uuid
 from fastapi import UploadFile
 
 from app.domain.models import UploadSession, JobStatus
+from app.domain.ports import FileServicePort, UploadSessionRepositoryPort
 from app.domain.schemas import TilingJobResponse
-from app.infrastructure.db.repository import UploadSessionRepository
-from app.infrastructure.services.file_service import FileService
 
 
 class ProcessUploadUseCase:
     def __init__(
         self,
-        file_service: FileService,
-        repo: UploadSessionRepository,
+        file_service: FileServicePort,
+        repo: UploadSessionRepositoryPort,
     ):
         self.file_service = file_service
         self.repo = repo

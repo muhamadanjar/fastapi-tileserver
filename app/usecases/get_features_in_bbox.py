@@ -8,15 +8,16 @@ import geopandas as gpd
 import requests
 
 from app.core.exceptions import LayerNotFoundError
+from app.domain.ports import LayerRepositoryPort, UploadArtifactClientPort, UploadSessionRepositoryPort
 from app.domain.schemas import BboxFeaturesResponse
-from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
 from app.usecases.artifact_source import artifact_source_context
 
 
 class GetFeaturesInBboxUseCase:
-    def __init__(self, layer_repo: LayerRepository, session_repo: UploadSessionRepository):
+    def __init__(self, layer_repo: LayerRepositoryPort, session_repo: UploadSessionRepositoryPort, artifact_client: Optional[UploadArtifactClientPort] = None):
         self.layer_repo = layer_repo
         self.session_repo = session_repo
+        self.artifact_client = artifact_client
 
     async def execute(
         self,
@@ -47,6 +48,7 @@ class GetFeaturesInBboxUseCase:
             session.filename if session else None,
             authorization,
             f"bbox-features:{layer.id}",
+            client=self.artifact_client,
         ) as source_path:
             if source_path and layer.file_type == 'vector':
                 features, exceeded = await asyncio.to_thread(
