@@ -22,10 +22,19 @@ class GeoServerStyleError(Exception):
 
 
 class GeoServerService:
-    def __init__(self, url: str, username: str, password: str, workspace: str, wms_url: str = ""):
-        self.geo = Geoserver(url, username=username, password=password)
+    def __init__(
+        self,
+        url: str,
+        username: str,
+        password: str,
+        workspace: str,
+        wms_url: str = "",
+        rest_url: str | None = None,
+    ):
+        rest_origin = (rest_url or url).rstrip("/")
+        self.geo = Geoserver(rest_origin, username=username, password=password)
         self.workspace = workspace
-        self._base_url = url.rstrip("/")
+        self._base_url = rest_origin
         self._wms_base_url = wms_url.rstrip("/") if wms_url else self._base_url
         self._auth = (username, password)
 
@@ -65,6 +74,46 @@ class GeoServerService:
             "bbox": bbox,
         }
 
+    def publish_shp_url(self, source_url: str, store_name: str) -> dict:
+        """Tell GeoServer to fetch a zipped shapefile from ``source_url``.
+
+        Only the URL crosses the worker-to-GeoServer boundary. This avoids
+        proxy body-size limits while allowing Upload API to use either local
+        storage (signed streaming URL) or S3 (pre-signed object URL).
+        """
+        self._ensure_workspace()
+        datastore_url = (
+            f"{self._base_url}/rest/workspaces/{self.workspace}"
+            f"/datastores/{store_name}/url.shp"
+        )
+        try:
+            response = requests.put(
+                datastore_url,
+                params={"filename": store_name, "update": "overwrite"},
+                data=source_url.encode("utf-8"),
+                headers={"Content-Type": "text/plain", "Accept": "application/xml"},
+                auth=self._auth,
+                timeout=(15, 600),
+            )
+            if response.status_code not in (200, 201, 202):
+                raise RuntimeError(
+                    f"GeoServer URL datastore upload failed ({response.status_code}): "
+                    f"{response.text[:300]}"
+                )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"GeoServer URL datastore upload failed: {exc}") from exc
+
+        bbox = self._recalculate_bbox(store_name)
+        layer_name = f"{self.workspace}:{store_name}"
+        return {
+            "layer_name": layer_name,
+            "store_name": store_name,
+            "workspace": self.workspace,
+            "wms_url": f"{self._wms_base_url}/{self.workspace}/wms",
+            "wfs_url": f"{self._wms_base_url}/{self.workspace}/wfs",
+            "bbox": bbox,
+        }
+
     def _recalculate_bbox(self, store_name: str) -> list | None:
         """Force GeoServer menghitung ulang native/latlon bbox featuretype, lalu return
         latLonBoundingBox sebagai [west, south, east, north]. None jika gagal."""
@@ -98,10 +147,43 @@ class GeoServerService:
         return None
 
     def _ensure_workspace(self) -> None:
+        """Ensure the configured workspace exists before creating a datastore.
+
+        The old client call deliberately ignored every error, which caused a
+        missing or unauthorized workspace to surface later as GeoServer's
+        unhelpful ``WorkspaceInfo.getId() ... workspace is null`` exception.
+        """
+        print(self._base_url)
+
+        workspace_url = f"{self._base_url}/rest/workspaces/{self.workspace}.json"
         try:
-            self.geo.create_workspace(workspace=self.workspace)
-        except Exception:
-            pass
+            existing = requests.get(workspace_url, auth=self._auth, timeout=15)
+            if existing.status_code == 200:
+                return
+            if existing.status_code != 404:
+                raise RuntimeError(
+                    f"GeoServer workspace check failed ({existing.status_code}): {existing.text[:300]}"
+                )
+
+            created = requests.post(
+                f"{self._base_url}/rest/workspaces",
+                json={"workspace": {"name": self.workspace}},
+                auth=self._auth,
+                timeout=30,
+            )
+            if created.status_code not in (200, 201, 202, 409):
+                raise RuntimeError(
+                    f"GeoServer workspace creation failed ({created.status_code}): {created.text[:300]}"
+                )
+
+            verified = requests.get(workspace_url, auth=self._auth, timeout=15)
+            if verified.status_code != 200:
+                raise RuntimeError(
+                    f"GeoServer workspace '{self.workspace}' is unavailable after creation "
+                    f"({verified.status_code}): {verified.text[:300]}"
+                )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"GeoServer workspace check failed: {exc}") from exc
 
     def _to_zip(self, path: str, rename_to: str = None) -> str:
         """Return a zip file path usable by GeoServer REST API.

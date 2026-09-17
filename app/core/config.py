@@ -58,6 +58,9 @@ class Settings(BaseSettings):
 
     # GeoServer
     GEOSERVER_URL: str = Field(default="http://localhost:8080/geoserver", env="GEOSERVER_URL")
+    # Optional direct REST origin for server-side writes. Use this when the
+    # browser-facing URL is behind Vercel/Nginx with a request-body limit.
+    GEOSERVER_REST_URL: Optional[str] = Field(default=None, env="GEOSERVER_REST_URL")
     GEOSERVER_WMS_URL: str = Field(default="", env="GEOSERVER_WMS_URL")
     GEOSERVER_USER: str = Field(default="admin", env="GEOSERVER_USER")
     GEOSERVER_PASSWORD: str = Field(default="geoserver", env="GEOSERVER_PASSWORD")

@@ -11,6 +11,7 @@ x-app-environment: &app-environment
   RABBITMQ_URL: ${TILESERVER_RABBITMQ_URL:-amqp://guest:guest@host.docker.internal:5672/}
   REDIS_URL: ${TILESERVER_REDIS_URL:-redis://host.docker.internal:6379/0}
   GEOSERVER_URL: ${TILESERVER_GEOSERVER_URL:-http://host.docker.internal:8080/geoserver}
+  GEOSERVER_REST_URL: ${TILESERVER_GEOSERVER_REST_URL:-}
 
 x-app-service: &app-service
   env_file:

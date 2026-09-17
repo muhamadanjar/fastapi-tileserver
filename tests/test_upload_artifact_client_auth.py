@@ -113,3 +113,41 @@ def test_user_grant_forwards_the_editor_authorization():
 
     assert mock_post.call_args.kwargs["headers"]["Authorization"] == "Bearer editor-token"
     assert mock_post.call_args.kwargs["json"] == {"consumer": "tileserver-api"}
+
+
+def test_pull_url_forwards_lease_and_returns_geoserver_fetch_url():
+    from unittest.mock import MagicMock
+
+    from app.infrastructure.services import upload_artifact_client
+
+    with patch.dict("os.environ", OAUTH_ENV, clear=False), patch(
+        "app.infrastructure.services.upload_artifact_client.SyncOAuthServiceClient"
+    ), patch.object(upload_artifact_client.requests, "post") as mock_post:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            text="",
+            json=lambda: {"url": "http://upload-api.internal/artifact.zip?signature=abc"},
+        )
+        caller = UploadArtifactClient()
+        assert caller.pull_url("artifact-1", "lease-1") == "http://upload-api.internal/artifact.zip?signature=abc"
+
+    assert mock_post.call_args.kwargs["json"] == {"lease_id": "lease-1"}
+    assert mock_post.call_args.kwargs["headers"]["X-Upload-Internal-Client"] == "true"
+
+
+def test_pull_url_rejects_loopback_source_that_remote_geoserver_cannot_fetch():
+    from unittest.mock import MagicMock
+
+    from app.infrastructure.services import upload_artifact_client
+
+    with patch.dict("os.environ", OAUTH_ENV, clear=False), patch(
+        "app.infrastructure.services.upload_artifact_client.SyncOAuthServiceClient"
+    ), patch.object(upload_artifact_client.requests, "post") as mock_post:
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            text="",
+            json=lambda: {"url": "http://localhost:9005/uploads/roads.zip?signature=abc"},
+        )
+        caller = UploadArtifactClient()
+        with pytest.raises(UploadArtifactClientError, match="loopback artifact pull URL"):
+            caller.pull_url("artifact-1", "lease-1")

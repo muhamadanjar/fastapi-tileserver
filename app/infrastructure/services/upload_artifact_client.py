@@ -7,6 +7,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import urlparse
 
 import requests
 from service_auth import SyncOAuthServiceClient, record_auth_event
@@ -14,6 +15,10 @@ from service_auth import SyncOAuthServiceClient, record_auth_event
 
 class UploadArtifactClientError(RuntimeError):
     pass
+
+
+class UploadArtifactPullUrlUnavailable(UploadArtifactClientError):
+    """Raised only when an older Upload API has not deployed pull-url yet."""
 
 
 class UploadArtifactClient:
@@ -122,6 +127,32 @@ class UploadArtifactClient:
         )
         if response.status_code >= 400:
             raise UploadArtifactClientError(response.text[:500])
+
+    def pull_url(self, artifact_id: str, lease_id: str) -> str:
+        """Return a short-lived URL that GeoServer can fetch without our OAuth header."""
+        response = requests.post(
+            f"{self.base_url}/artifacts/{artifact_id}/pull-url",
+            headers=self.headers,
+            json={"lease_id": lease_id},
+            timeout=15,
+        )
+        if response.status_code in (404, 405):
+            raise UploadArtifactPullUrlUnavailable(
+                "Upload API does not support artifact pull URLs yet"
+            )
+        if response.status_code >= 400:
+            raise UploadArtifactClientError(response.text[:500])
+        url = response.json().get("url")
+        if not isinstance(url, str) or not url:
+            raise UploadArtifactClientError("Upload API returned an invalid artifact pull URL")
+        hostname = urlparse(url).hostname
+        if hostname in {"localhost", "127.0.0.1", "::1"}:
+            raise UploadArtifactClientError(
+                "Upload API returned a loopback artifact pull URL. Configure "
+                "S3_PUBLIC_ENDPOINT_URL (S3/MinIO) or ARTIFACT_PULL_URL_BASE "
+                "(local storage) to an origin reachable from the GeoServer host"
+            )
+        return url
 
     @contextmanager
     def materialize(self, artifact_id: str, filename: str) -> Iterator[Path]:
