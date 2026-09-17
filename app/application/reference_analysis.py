@@ -12,10 +12,13 @@ import geopandas as gpd
 from sqlalchemy import func, text
 from sqlmodel import select
 
-from app.analysis.reference_intersection import intersect_reference, validate_frame
-from app.domain.models import AnalysisReference, AnalysisUpload, ReferenceAnalysisJob, ActiveAnalysisSource, Layer
-from app.infrastructure.services.analysis_reference_source import load_reference
-from app.infrastructure.services.reference_analysis_files import read_shapefile_archive, write_json, export_results
+from app.analysis.reference_intersection import validate_frame
+from app.analysis.reference_operations import OPERATIONS, run_reference_operation
+from app.domain.models import AnalysisReference, AnalysisUpload, ReferenceAnalysisJob, ActiveAnalysisSource, JobStatus, Layer, UploadSession
+from app.domain.ports import (
+    AnalysisStoragePort,
+    ReferenceSourcePort,
+)
 
 logger = logging.getLogger(__name__)
 ACTIVE = {"pending", "processing"}
@@ -61,10 +64,20 @@ async def guard_source_delete_async(session, layer_id):
 
 
 class ReferenceAnalysis:
-    def __init__(self, session, settings, enqueue=None):
+    def __init__(
+        self,
+        session,
+        settings,
+        enqueue=None,
+        *,
+        source: ReferenceSourcePort,
+        storage: AnalysisStoragePort,
+    ):
         self.session = session
         self.settings = settings
         self.enqueue = enqueue
+        self._source = source
+        self._storage = storage
         self.root = Path(settings.UPLOAD_DIR) / "analysis-workspace"
 
     def directory(self, identity):
@@ -80,7 +93,7 @@ class ReferenceAnalysis:
         layer = self.session.exec(select(Layer).where(Layer.id == layer_id).with_for_update()).first()
         if layer is None:
             raise AnalysisError("Layer tidak ditemukan.", 404)
-        frame, _ = load_reference(self.session, layer, self.settings)
+        frame, _ = self._source.load_reference(self.session, layer, self.settings)
         columns = set(frame.columns) - {frame.geometry.name}
         if config["category_field"] not in columns or not set(config["attributes"]).issubset(columns):
             raise AnalysisError("Kolom kategori atau atribut acuan tidak ditemukan.")
@@ -120,8 +133,8 @@ class ReferenceAnalysis:
                     if total > self.settings.ANALYSIS_MAX_UPLOAD_BYTES:
                         raise AnalysisError("Ukuran ZIP melebihi batas unggahan.", 413)
                     stream.write(chunk)
-            frame = read_shapefile_archive(archive, directory / "source", self.settings)
-            write_json(directory / "input.geojson", json.loads(frame.to_json(drop_id=True)))
+            frame = self._storage.read_shapefile_archive(archive, directory / "source", self.settings)
+            self._storage.write_json(directory / "input.geojson", json.loads(frame.to_json(drop_id=True)))
             archive.unlink()
             shutil.rmtree(directory / "source")
             uploaded = now()
@@ -135,7 +148,9 @@ class ReferenceAnalysis:
             shutil.rmtree(directory, ignore_errors=True)
             raise
 
-    def start(self, input_id, reference_id, owner):
+    def start(self, input_id, reference_id, owner, operation="intersect"):
+        if operation not in OPERATIONS:
+            raise AnalysisError("Operasi analisis tidak dikenal.")
         capacity_lock(self.session)
         upload = self.session.exec(select(AnalysisUpload).where(AnalysisUpload.id == input_id).with_for_update()).first()
         if upload is None or upload.owner_hash != owner:
@@ -153,7 +168,7 @@ class ReferenceAnalysis:
         if active_count >= self.settings.ANALYSIS_MAX_ACTIVE_JOBS:
             raise AnalysisError("Antrean analisis penuh. Coba kembali sebentar lagi.", 429)
         identity = str(uuid4())
-        job = ReferenceAnalysisJob(id=identity, input_id=input_id, owner_hash=owner, reference_id=reference_id, reference_config=ref.model_dump(mode="json"), task_id=str(uuid4()), created_at=now())
+        job = ReferenceAnalysisJob(id=identity, input_id=input_id, owner_hash=owner, reference_id=reference_id, reference_config=ref.model_dump(mode="json"), operation=operation, task_id=str(uuid4()), created_at=now())
         self.session.add(job)
         self.session.flush()
         self.session.add(ActiveAnalysisSource(job_id=identity, layer_id=reference_id))
@@ -182,6 +197,82 @@ class ReferenceAnalysis:
         if job["status"] != "done":
             raise AnalysisError("Hasil belum tersedia.", 409)
         return self.directory(job["input_id"])
+
+    def rows(self, identity, owner, offset=0, limit=50):
+        result = self._storage.read_json(self.result(identity, owner) / "result.geojson")
+        return {
+            "total": len(result["features"]),
+            "rows": [feature["properties"] for feature in result["features"][offset:offset + limit]],
+            "summary": result["summary"],
+            "warnings": result["warnings"],
+            "reference": result["reference"],
+            "measurement": result["measurement"],
+        }
+
+    def save(self, identity, owner):
+        """Make a completed workspace result a durable, visible GeoJSON layer.
+
+        The deterministic IDs are the seam for idempotency: retrying the same
+        request returns the already-created layer without copying the artifact
+        or creating a second catalogue entry.
+        """
+        job = self.session.get(ReferenceAnalysisJob, identity)
+        if job is None or job.owner_hash != owner:
+            raise AnalysisError("Hasil analisis tidak ditemukan.", 404)
+        if job.status != "done":
+            raise AnalysisError("Hasil belum tersedia.", 409)
+        layer_id = f"reference-analysis-{job.id}"
+        existing = self.session.get(Layer, layer_id)
+        if existing:
+            return {"message": "Hasil analisis sudah disimpan.", "layer_id": layer_id}
+
+        result = self._storage.read_json(self.directory(job.input_id) / "result.geojson")
+        upload_id = f"reference-analysis-upload-{job.id}"
+        saved_path = self._storage.persist_result(
+            self.directory(job.input_id) / "result.geojson",
+            self.root.parent / "reference-analysis-results" / job.id,
+        )
+        bbox = result.get("bbox") or [None, None, None, None]
+        size = saved_path.stat().st_size
+        upload = UploadSession(
+            id=upload_id,
+            filename=f"reference-analysis-{job.id}.geojson",
+            file_type="vector",
+            layer_id=layer_id,
+            total_size=size,
+            received_bytes=size,
+            status=JobStatus.done,
+            final_path=str(saved_path),
+            output_format="vector",
+        )
+        layer = Layer(
+            id=layer_id,
+            upload_session_id=upload_id,
+            filename=f"Reference analysis {job.operation}",
+            file_type="vector",
+            layer_type="geojson",
+            tile_url_template=f"/data/uploads/{upload_id}/result.geojson",
+            is_active=True,
+            is_visible=True,
+            bbox_west=bbox[0],
+            bbox_south=bbox[1],
+            bbox_east=bbox[2],
+            bbox_north=bbox[3],
+            file_metadata={"reference_analysis": {"job_id": job.id, "operation": job.operation, "ephemeral": False}},
+        )
+        try:
+            self.session.add(upload)
+            # ``Layer.upload_session_id`` has a database foreign key to the
+            # upload row. Flush the aggregate root first so SQLAlchemy cannot
+            # order these independent instances incorrectly during commit.
+            self.session.flush()
+            self.session.add(layer)
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            saved_path.unlink(missing_ok=True)
+            raise
+        return {"message": "Hasil analisis disimpan sebagai layer permanen.", "layer_id": layer_id}
 
     def finish(self, job, status, error=None):
         job.status = status
@@ -215,7 +306,7 @@ class ReferenceAnalysis:
             layer = self.session.exec(select(Layer).where(Layer.id == job.reference_id).with_for_update()).first()
             if layer is None:
                 raise AnalysisError("Sumber acuan tidak tersedia.")
-            reference, version = load_reference(self.session, layer, self.settings)
+            reference, version = self._source.load_reference(self.session, layer, self.settings)
             # Use latest configuration if it still exists, otherwise admitted configuration.
             config = self.session.get(AnalysisReference, job.reference_id)
             if config:
@@ -225,9 +316,9 @@ class ReferenceAnalysis:
             self.session.commit()
             directory = self.directory(job.input_id)
             source = validate_frame(gpd.read_file(directory / "input.geojson"), max_features=self.settings.ANALYSIS_MAX_FEATURES, max_vertices=self.settings.ANALYSIS_MAX_VERTICES)
-            result = intersect_reference(source, reference, job.reference_config["category_field"], job.reference_config["attributes"], job.id, self.settings.ANALYSIS_MAX_RESULTS, self.settings.ANALYSIS_MAX_EXTRACTED_BYTES, self.settings.ANALYSIS_MAX_VERTICES * 10)
+            result = run_reference_operation(job.operation, source, reference, job.reference_config["category_field"], job.reference_config["attributes"], job.id, self.settings.ANALYSIS_MAX_RESULTS, self.settings.ANALYSIS_MAX_EXTRACTED_BYTES, self.settings.ANALYSIS_MAX_VERTICES * 10)
             result["reference"] = {**job.reference_config, "source_version": version, "read_at": job.started_at.isoformat()}
-            export_results(directory, result)
+            self._storage.export_results(directory, result)
             job = self.session.exec(select(ReferenceAnalysisJob).where(ReferenceAnalysisJob.id == identity).with_for_update().execution_options(populate_existing=True)).one()
             if job.status != "processing":
                 return

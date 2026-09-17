@@ -11,6 +11,7 @@ import pyogrio
 from shapely.geometry import shape
 
 from app.analysis.reference_intersection import parts, DIMENSIONS, validate_frame
+from app.infrastructure.services.analysis_reference_source import repair_geometry
 
 
 def read_shapefile_archive(archive: Path, destination: Path, settings):
@@ -50,7 +51,7 @@ def read_shapefile_archive(archive: Path, destination: Path, settings):
             count = int(pyogrio.read_info(source)["features"])
             if count > settings.ANALYSIS_MAX_FEATURES:
                 raise ValueError(f"Maksimal {settings.ANALYSIS_MAX_FEATURES:,} fitur; ditemukan {count:,}.")
-            return validate_frame(gpd.read_file(source), max_features=settings.ANALYSIS_MAX_FEATURES, max_vertices=settings.ANALYSIS_MAX_VERTICES)
+            return validate_frame(repair_geometry(gpd.read_file(source)), max_features=settings.ANALYSIS_MAX_FEATURES, max_vertices=settings.ANALYSIS_MAX_VERTICES)
     except (zipfile.BadZipFile, RuntimeError) as exc:
         raise ValueError("ZIP tidak dapat dibaca atau dilindungi kata sandi.") from exc
 
@@ -59,6 +60,18 @@ def write_json(path, value):
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(value, ensure_ascii=False, allow_nan=False), encoding="utf-8")
     temp.replace(path)
+
+
+def read_json(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def persist_result(source: Path, destination: Path) -> Path:
+    """Copy a finished ephemeral result into a directory not managed by TTL cleanup."""
+    destination.mkdir(parents=True, exist_ok=True)
+    target = destination / "result.geojson"
+    shutil.copy2(source, target)
+    return target
 
 
 def csv_value(value):

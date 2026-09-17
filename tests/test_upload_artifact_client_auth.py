@@ -34,7 +34,10 @@ def test_oauth_credentials_create_audience_scoped_caller():
         "upload-api",
         ("upload.artifacts.read", "upload.artifacts.lease"),
     )
-    assert caller.headers == {"Authorization": "Bearer generated"}
+    assert caller.headers == {
+        "Authorization": "Bearer generated",
+        "X-Upload-Internal-Client": "true",
+    }
 
 
 def test_partial_oauth_credentials_are_rejected():
@@ -55,7 +58,10 @@ def test_legacy_token_is_still_accepted_during_migration():
         "app.infrastructure.services.upload_artifact_client.record_auth_event"
     ) as auth_event:
         caller = UploadArtifactClient()
-        assert caller.headers == {"Authorization": "Bearer legacy-token"}
+        assert caller.headers == {
+            "Authorization": "Bearer legacy-token",
+            "X-Upload-Internal-Client": "true",
+        }
 
     assert auth_event.call_args_list[-1].kwargs == {
         "outcome": "used",
@@ -87,7 +93,10 @@ def test_revoked_token_fails_upload_call():
 
     mock_put.assert_called_once()
     headers = mock_put.call_args.kwargs["headers"]
-    assert headers == {"Authorization": "Bearer revoked"}
+    assert headers == {
+        "Authorization": "Bearer revoked",
+        "X-Upload-Internal-Client": "true",
+    }
 
 
 def test_user_grant_forwards_the_editor_authorization():

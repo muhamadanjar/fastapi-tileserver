@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import subprocess
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,8 +23,27 @@ from app.infrastructure.health import check_all_infrastructure
 
 _csw_logger = logging.getLogger("app.csw_init")
 
+
+def _current_version() -> str:
+    """Resolve tileserver version: env TILESERVER_VERSION > latest git tag > 0.0.0."""
+    env_version = os.getenv("TILESERVER_VERSION")
+    if env_version:
+        return env_version
+    try:
+        tag = subprocess.run(
+            ["git", "describe", "--tags", "--abbrev=0"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        return tag or "0.0.0"
+    except Exception:
+        return "0.0.0"
+
+
+__version__ = _current_version()
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
+    version=__version__,
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
 )
 
@@ -101,7 +122,7 @@ app.include_router(api_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 def root():
-    return {"message": "FastAPI TileServer is running."}
+    return {"message": "FastAPI TileServer is running.", "version": __version__}
 
 
 @app.get("/health")

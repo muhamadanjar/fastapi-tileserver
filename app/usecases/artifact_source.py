@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator, Optional
 
-from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
+from app.domain.ports import UploadArtifactClientPort
 
 
 @asynccontextmanager
@@ -17,6 +17,7 @@ async def artifact_source_context(
     filename: Optional[str],
     authorization: Optional[str],
     reference: str,
+    client: Optional[UploadArtifactClientPort] = None,
 ) -> AsyncIterator[Optional[Path]]:
     """Yield a readable source path, granting and leasing artifact-backed files."""
     if not final_path:
@@ -39,7 +40,8 @@ async def artifact_source_context(
     if not authorization:
         raise PermissionError("Authorization is required to read an artifact-backed layer source")
 
-    client = UploadArtifactClient()
+    if client is None:
+        raise PermissionError("Artifact source adapter is not configured")
     grant_id = await asyncio.to_thread(client.create_user_grant, artifact_id, authorization)
     lease = await asyncio.to_thread(
         client.acquire_lease,

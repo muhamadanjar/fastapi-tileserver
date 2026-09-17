@@ -7,8 +7,8 @@ import rasterio
 
 from app.core.exceptions import LayerFieldsUnavailableError, LayerNotFoundError
 from app.domain.models import Layer
+from app.domain.ports import LayerRepositoryPort, UploadArtifactClientPort, UploadSessionRepositoryPort
 from app.domain.schemas import LayerFieldsResponse
-from app.infrastructure.db.repository import LayerRepository, UploadSessionRepository
 from app.usecases.layer_source import resolve_layer_source_path
 
 
@@ -23,9 +23,10 @@ class GetLayerFieldsUseCase:
     - external ESRI MapServer/FeatureServer → file sumber lokal atau REST API
     """
 
-    def __init__(self, layer_repo: LayerRepository, session_repo: UploadSessionRepository):
+    def __init__(self, layer_repo: LayerRepositoryPort, session_repo: UploadSessionRepositoryPort, artifact_client: Optional[UploadArtifactClientPort] = None):
         self.layer_repo = layer_repo
         self.session_repo = session_repo
+        self.artifact_client = artifact_client
 
     async def execute(
         self,
@@ -38,7 +39,7 @@ class GetLayerFieldsUseCase:
         if not layer:
             raise LayerNotFoundError(layer_id)
 
-        source_path = await resolve_layer_source_path(layer, self.session_repo, authorization=authorization)
+        source_path = await resolve_layer_source_path(layer, self.session_repo, authorization=authorization, client=self.artifact_client)
 
         if layer.file_type == 'external':
             if layer.layer_type not in ('wms', 'esri_mapserver', 'esri_featureserver'):

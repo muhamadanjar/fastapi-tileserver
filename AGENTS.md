@@ -23,6 +23,15 @@ The codebase is organized into distinct layers:
 - **Core** (`app/core/`): Cross-cutting concerns (exceptions, middleware, security, utilities)
 - **Config** (`app/config/`): Environment-driven settings using Pydantic BaseSettings with nested configuration
 
+### Clean Architecture dependency rules
+
+- **Domain** contains business concepts, pure rules, and port interfaces. It must not import `app.application`, `app.usecases`, `app.infrastructure`, `app.presentation`, `app.workers`, or framework/persistence packages.
+- **Application and use cases** orchestrate domain behaviour and depend only on domain, core abstractions, and ports. They must not import infrastructure, presentation, workers, database sessions, HTTP clients, queue clients, or file/geospatial I/O adapters.
+- **Infrastructure** owns database/ORM access, filesystem, HTTP, geospatial I/O, message-broker, and external-service adapters. It implements domain/application ports.
+- **Presentation and workers** are entry-point adapters. They may translate HTTP/task data and assemble concrete adapters at a composition root, but must not contain business orchestration or persistence queries.
+- Concrete adapters are injected into application/use-case constructors or factory functions. Default concrete dependencies inside application/use-case modules are forbidden.
+- Add or update an architecture-boundary test whenever a new layer/module is introduced.
+
 ## Database schema and migrations
 
 - Make every database-field addition or change in the SQLModel model first.

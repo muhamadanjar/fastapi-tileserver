@@ -6,7 +6,7 @@ import pytest
 import rasterio
 from fastapi import HTTPException
 
-from app.api.v1.endpoints.layers import get_layer_legend
+from app.presentation.router.api.v1.endpoints.layers import get_layer_legend
 from app.core.config import settings
 from app.domain.models import Layer
 from app.infrastructure.services.legend_renderer import is_stale, raster_fingerprint, vector_fingerprint

@@ -34,10 +34,11 @@ from app.infrastructure.db.connection import get_async_session
 from app.infrastructure.db.repository import UploadSessionRepository, LayerRepository
 from app.usecases.init_chunked_upload import InitChunkedUploadUseCase
 from app.usecases.receive_chunk import ReceiveChunkUseCase
-from app.workers.tasks import process_tiling_task, publish_geoserver_task
-from app.infrastructure.services.file_service import FileService
+from app.workers.tasks import import_shapefile_task, process_tiling_task, publish_geoserver_task
+from app.domain.upload_utils import allowed_file, prepare_source_path, save_layer_type
 from app.infrastructure.services.bbox_extractor import extract_bbox_from_file
 from app.infrastructure.services.upload_artifact_client import UploadArtifactClient, UploadArtifactClientError
+from app.infrastructure.storage.chunk_storage import ChunkStorage
 from app.domain.models import UploadSession
 from app.usecases.shapefile_import_dispatch import dispatch_shapefile_import
 
@@ -50,6 +51,10 @@ def _get_repo(session=Depends(get_async_session)) -> UploadSessionRepository:
 
 def _get_layer_repo(session=Depends(get_async_session)) -> LayerRepository:
     return LayerRepository(session)
+
+
+def _enqueue_shapefile_import(upload_id: str, task_id: str) -> None:
+    import_shapefile_task.apply_async(kwargs={"upload_id": upload_id}, task_id=task_id)
 
 
 def _artifact_handoff_output_format(body: ArtifactTilingRequest) -> str:
@@ -95,7 +100,7 @@ async def create_artifact_tiling_job(
             body.handoff_id,
         )
         artifact = await run_in_threadpool(client.metadata, body.artifact_id)
-        file_type = FileService.allowed_file(artifact["filename"])
+        file_type = allowed_file(artifact["filename"])
     except (UploadArtifactClientError, UnsupportedFileFormatException) as exc:
         print("exc")
         if "lease" in locals():
@@ -141,7 +146,7 @@ async def init_upload(
     repo: UploadSessionRepository = Depends(_get_repo),
 ):
     try:
-        use_case = InitChunkedUploadUseCase(repo)
+        use_case = InitChunkedUploadUseCase(repo, ChunkStorage())
         session = await use_case.execute(body.filename, body.total_size, body.output_format, body.max_zoom)
     except UnsupportedFileFormatException as exc:
         raise HTTPException(status_code=415, detail=exc.message)
@@ -264,8 +269,8 @@ async def publish_to_geoserver(
     }
 
 
-@router.post("/{upload_id}/save")
-async def save_geojson(
+@router.post("/{upload_id}/save", summary="Save Layer")
+async def save_layer(
     upload_id: str,
     repo: UploadSessionRepository = Depends(_get_repo),
     layer_repo: LayerRepository = Depends(_get_layer_repo),
@@ -306,7 +311,7 @@ async def save_geojson(
     is_kml = filename_lower.endswith('.kml')
     is_zip = filename_lower.endswith('.zip')
     layer_id = session.layer_id
-    determined_layer_type, file_ext = FileService.save_layer_type(filename_lower)
+    determined_layer_type, file_ext = save_layer_type(filename_lower)
 
     # Create layer directory if it doesn't exist
     layer_dir = Path(settings.TILES_DIR) / layer_id
@@ -316,7 +321,7 @@ async def save_geojson(
 
     with source_ctx as materialized_source:
         # prepare_source_path menyamakan behavior dengan flow lokal: KML dikonversi ke GeoJSON.
-        source_path, _ = FileService.prepare_source_path(Path(materialized_source))
+        source_path, _ = prepare_source_path(Path(materialized_source))
 
         if is_zip:
             # Validate shapefile.zip is well-formed and actually contains a .shp member.
@@ -501,7 +506,7 @@ async def start_shapefile_import(
         )
     _validate_shapefile_import_source(session)
 
-    task_id = await dispatch_shapefile_import(session, repo)
+    task_id = await dispatch_shapefile_import(session, repo, _enqueue_shapefile_import)
     if not task_id:
         refreshed = await repo.get_by_id(upload_id)
         raise HTTPException(
@@ -532,7 +537,7 @@ async def retry_shapefile_import(
         )
     _validate_shapefile_import_source(session)
 
-    task_id = await dispatch_shapefile_import(session, repo)
+    task_id = await dispatch_shapefile_import(session, repo, _enqueue_shapefile_import)
     if not task_id:
         refreshed = await repo.get_by_id(upload_id)
         raise HTTPException(
@@ -650,7 +655,7 @@ async def receive_chunk(
         raise HTTPException(status_code=400, detail="Empty request body.")
 
     try:
-        use_case = ReceiveChunkUseCase(repo)
+        use_case = ReceiveChunkUseCase(repo, ChunkStorage())
         return await use_case.execute(upload_id, chunk_index, chunk_data)
     except SessionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=exc.message)

@@ -1,5 +1,4 @@
 """Public browser-owned workspace and independently authorized admin configuration."""
-import json
 from typing import Literal
 
 import requests
@@ -11,7 +10,7 @@ from app.application.reference_analysis import ReferenceAnalysis, AnalysisError,
 from app.core.config import settings
 from app.domain.models import AnalysisReference, Layer
 from app.infrastructure.db.connection import get_sync_session
-from app.infrastructure.services.analysis_reference_source import load_reference
+from app.infrastructure.wiring import default_analysis_reference_source, default_analysis_storage
 
 router = APIRouter()
 
@@ -45,7 +44,13 @@ def service(session=Depends(get_sync_session)):
     def enqueue(identity, task_id):
         from app.workers.reference_analysis_tasks import run_reference_analysis
         run_reference_analysis.apply_async(args=[identity], task_id=task_id)
-    yield ReferenceAnalysis(session, settings, enqueue)
+    yield ReferenceAnalysis(
+        session,
+        settings,
+        enqueue,
+        source=default_analysis_reference_source(),
+        storage=default_analysis_storage(),
+    )
 
 
 def invoke(fn, *args):
@@ -68,6 +73,7 @@ class StartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     input_id: str = Field(min_length=1, max_length=64)
     reference_id: str = Field(min_length=1, max_length=200)
+    operation: Literal["intersect", "clip", "difference", "spatial_join"] = "intersect"
 
 
 @router.get("/analysis-references/{layer_id}", dependencies=[Depends(require_admin)])
@@ -78,7 +84,7 @@ def reference_config(layer_id: str, svc=Depends(service)):
     ref = svc.session.get(AnalysisReference, layer_id)
     config = ref.model_dump(mode="json") if ref else None
     try:
-        frame, _ = load_reference(svc.session, layer, settings)
+        frame, _ = svc._source.load_reference(svc.session, layer, settings)
     except Exception as exc:
         # Admin must still be able to detach a broken/missing reference source.
         message = str(exc) if isinstance(exc, ValueError) else "Geometri sumber tidak dapat dibaca. Periksa berkas sumber layer."
@@ -115,7 +121,7 @@ def remove_input(input_id: str, identity=Depends(owner), svc=Depends(service)):
 
 @router.post("/analysis-workspace/jobs", status_code=202)
 def start_job(body: StartRequest, identity=Depends(owner), svc=Depends(service)):
-    return invoke(svc.start, body.input_id, body.reference_id, identity)
+    return invoke(svc.start, body.input_id, body.reference_id, identity, body.operation)
 
 
 @router.get("/analysis-workspace/jobs")
@@ -130,9 +136,11 @@ def status(job_id: str, identity=Depends(owner), svc=Depends(service)):
 
 @router.get("/analysis-workspace/jobs/{job_id}/rows")
 def rows(job_id: str, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500), identity=Depends(owner), svc=Depends(service)):
-    directory = invoke(svc.result, job_id, identity)
-    result = json.loads((directory / "result.geojson").read_text())
-    return {"total": len(result["features"]), "rows": [f["properties"] for f in result["features"][offset:offset + limit]], "summary": result["summary"], "warnings": result["warnings"], "reference": result["reference"], "measurement": result["measurement"]}
+    return invoke(svc.rows, job_id, identity, offset, limit)
+
+@router.post("/analysis-workspace/jobs/{job_id}/save")
+def save_job(job_id: str, identity=Depends(owner), svc=Depends(service)):
+    return invoke(svc.save, job_id, identity)
 
 
 @router.get("/analysis-workspace/jobs/{job_id}/download")
