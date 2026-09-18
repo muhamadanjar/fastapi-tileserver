@@ -132,6 +132,7 @@ class Settings(BaseSettings):
     LAHAT_API_OAUTH_CLIENT_ID: Optional[str] = Field(default=None, env="LAHAT_API_OAUTH_CLIENT_ID")
     LAHAT_API_OAUTH_CLIENT_SECRET: Optional[str] = Field(default=None, env="LAHAT_API_OAUTH_CLIENT_SECRET")
     LAHAT_API_OAUTH_SCOPE: str = Field(default="", env="LAHAT_API_OAUTH_SCOPE")
+    LAHAT_API_OAUTH_AUDIENCE: str = Field(default="lahat-api", env="LAHAT_API_OAUTH_AUDIENCE")
     LAHAT_ENRICHMENT_TTL_SECONDS: int = Field(default=60, gt=0, env="LAHAT_ENRICHMENT_TTL_SECONDS")
     LAHAT_ENRICHMENT_TIMEOUT_SECONDS: float = Field(default=0.8, gt=0, env="LAHAT_ENRICHMENT_TIMEOUT_SECONDS")
     LAHAT_ENRICHMENT_ENABLED: bool = Field(default=True, env="LAHAT_ENRICHMENT_ENABLED")

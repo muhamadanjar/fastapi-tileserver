@@ -258,7 +258,7 @@ class QueryLayerFeaturesUseCase:
 
         if response.type == 'vector' and response.features:
             filtered = [
-                {k: v for k, v in feat.items() if k in visible or k == '_layer'}
+                {k: v for k, v in feat.items() if k in visible or k == '_layer' or k.endswith('_label') or k.endswith('_description') or k.endswith('_area_code') or k == '_enrichment'}
                 for feat in response.features
             ]
             return FeatureQueryResponse(type='vector', count=len(filtered), features=filtered)

@@ -44,6 +44,7 @@ class LahatKodefikasiClient:
         self.oauth_client_id = settings.LAHAT_API_OAUTH_CLIENT_ID
         self.oauth_client_secret = settings.LAHAT_API_OAUTH_CLIENT_SECRET
         self.oauth_scope = settings.LAHAT_API_OAUTH_SCOPE
+        self.oauth_audience = getattr(settings, "LAHAT_API_OAUTH_AUDIENCE", "lahat-api")
 
         self._cache: dict[str, tuple[float, dict]] = {}
         self._oauth_token: Optional[str] = None
@@ -75,18 +76,19 @@ class LahatKodefikasiClient:
         if self._oauth_token and time.time() < self._oauth_expiry - 30:
             return self._oauth_token
         try:
+            # build token request with audience (required by usermanagement)
+            token_data: dict[str, str] = {
+                "grant_type": "client_credentials",
+                "client_id": self.oauth_client_id,
+                "client_secret": self.oauth_client_secret,
+            }
+            if self.oauth_scope:
+                token_data["scope"] = self.oauth_scope
+            if getattr(self, "oauth_audience", None):
+                token_data["audience"] = self.oauth_audience  # type: ignore[attr-defined]
             resp = requests.post(
                 self.oauth_token_url,
-                data={
-                    "grant_type": "client_credentials",
-                    "client_id": self.oauth_client_id,
-                    "client_secret": self.oauth_client_secret,
-                    "scope": self.oauth_scope,
-                } if self.oauth_scope else {
-                    "grant_type": "client_credentials",
-                    "client_id": self.oauth_client_id,
-                    "client_secret": self.oauth_client_secret,
-                },
+                data=token_data,
                 timeout=5,
             )
             resp.raise_for_status()
