@@ -261,11 +261,29 @@ class SyncCatalog:
         self.session.flush()
 
     def _save_layer(self, ld: LayerData) -> None:
+        # Batch output_format -> Layer.layer_type mapping. `raster` in the
+        # batch domain means XYZ PNG tiles (`tile`), `wms` is a GeoServer
+        # WMS layer, `mvt` is vector tiles, `postgis` is a DB table.
+        _OUTPUT_TO_LAYER_TYPE = {
+            "wms": "wms",
+            "mvt": "mvt",
+            "raster": "tile",
+            "postgis": "postgis",
+        }
+        _OUTPUT_TO_FILE_TYPE = {
+            "wms": "external",
+            "mvt": "vector",
+            "raster": "vector",
+            "postgis": "vector",
+        }
+        mapped_layer_type = _OUTPUT_TO_LAYER_TYPE.get(ld.output_format, "tile")
+        mapped_file_type = _OUTPUT_TO_FILE_TYPE.get(ld.output_format, "vector")
+
         layer = self.session.get(Layer, ld.id)
         if not layer:
             layer = Layer(
                 id=ld.id, code=ld.code, filename=ld.name,
-                layer_type="tile", file_type="vector",
+                layer_type=mapped_layer_type, file_type=mapped_file_type,
                 tile_url_template=ld.url,
                 upload_session_id=ld.upload_id,
             )
@@ -275,6 +293,11 @@ class SyncCatalog:
             layer.tile_url_template = ld.url
             if ld.upload_id and not layer.upload_session_id:
                 layer.upload_session_id = ld.upload_id
+            # Keep layer_type/file_type consistent with the authoritative
+            # output_format stored in LayerData. This fixes the batch-group
+            # WMS bug where layers were persisted as `tile`.
+            layer.layer_type = mapped_layer_type
+            layer.file_type = mapped_file_type
         meta = dict(layer.file_metadata or {})
         meta.update(ld.metadata)
         meta["output_format"] = ld.output_format

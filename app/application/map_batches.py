@@ -66,7 +66,7 @@ class MapBatches:
                 raise MapError("Only an inspected, unprocessed batch can be configured", 409)
             output = configuration["output_format"]
             mode = configuration["mode"]
-            if output not in ("raster", "mvt", "wms") or mode not in ("group", "separate"):
+            if output not in ("raster", "mvt", "wms", "postgis") or mode not in ("group", "separate"):
                 raise MapError("Unsupported output format or processing mode")
             selections = configuration["datasets"]
             ids = [entry["id"] for entry in selections]

@@ -40,7 +40,7 @@ class DatasetSelection(BaseModel):
 
 class BatchConfigureRequest(BaseModel):
     mode: str = Field(pattern="^(group|separate)$", description="group or separate")
-    output_format: str = Field(pattern="^(raster|mvt|wms)$", description="raster, mvt, or wms")
+    output_format: str = Field(pattern="^(raster|mvt|wms|postgis)$", description="raster, mvt, wms, or postgis")
     name: Optional[str] = None
     code: Optional[str] = None        # group code when mode=group
     max_zoom: int = 14
