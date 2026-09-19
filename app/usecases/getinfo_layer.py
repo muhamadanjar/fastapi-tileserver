@@ -9,6 +9,7 @@ from typing import Optional
 from app.core.exceptions import LayerSourceUnavailableError
 from app.domain.models import Layer
 from app.domain.ports import (
+    LahatKodefikasiPort,
     LayerRepositoryPort,
     UploadArtifactClientPort,
     UploadSessionRepositoryPort,
@@ -36,10 +37,12 @@ class QueryLayerFeaturesUseCase:
         layer_repo: LayerRepositoryPort,
         session_repo: UploadSessionRepositoryPort,
         artifact_client: Optional[UploadArtifactClientPort] = None,
+        kodefikasi_client: Optional[LahatKodefikasiPort] = None,
     ):
         self.layer_repo = layer_repo
         self.session_repo = session_repo
         self.artifact_client = artifact_client
+        self.kodefikasi_client = kodefikasi_client
 
     async def execute(
         self,
@@ -55,6 +58,8 @@ class QueryLayerFeaturesUseCase:
 
         result = await self._dispatch(layer, lon, lat, authorization=authorization)
         response = result.response
+        # Enrich kodefikasi (ORDE/KODKWS/JNSRPR) secara additive sebelum field filtering
+        response = await self._enrich_kodefikasi(layer, response)
         # Field config dari file_metadata.fields berlaku untuk SEMUA layer type
         response = self._apply_field_configs(layer, response)
         if result.query_hint and not response.query_hint:
@@ -157,6 +162,82 @@ class QueryLayerFeaturesUseCase:
         async with self._source_context(layer, authorization=authorization) as source_path:
             return await asyncio.to_thread(adapter.query, layer, lon, lat, source_path)
 
+    async def _enrich_kodefikasi(self, layer: Layer, response: FeatureQueryResponse) -> FeatureQueryResponse:
+        """Enrich vector features dengan label kodefikasi dari lahat_api.
+
+        Additive: KODE → KODE_label, KODE_description, + _enrichment metadata.
+        Degraded (timeout/401/error) → return raw + _enrichment status degraded.
+        """
+        if response.type != "vector" or not response.features:
+            return response
+        cfg = (layer.file_metadata or {}).get("kodefikasi")
+        if not cfg or not isinstance(cfg, dict):
+            return response
+        # support legacy key "code_field" and new "enrich_fields"
+        code_field = cfg.get("code_field")
+        catalog_code = cfg.get("catalog_code")
+        plan_component = cfg.get("plan_component") or "PR"
+        enrich_fields = cfg.get("enrich_fields") or []
+        if not catalog_code or (not code_field and not enrich_fields):
+            return response
+        # collect distinct codes from all target fields
+        fields = []
+        if code_field:
+            fields.append(code_field)
+        for f in enrich_fields:
+            if f and f not in fields:
+                fields.append(f)
+        # also auto-detect: if enrich_fields empty, use code_field only; else combine
+        codes_set: set[str] = set()
+        for feat in response.features:
+            for fld in fields:
+                val = feat.get(fld)
+                if val is not None and str(val).strip():
+                    codes_set.add(str(val).strip())
+        if not codes_set:
+            return response
+        if not self.kodefikasi_client:
+            # no client configured → degraded but not fatal
+            enriched = []
+            for feat in response.features:
+                nf = dict(feat)
+                for fld in fields:
+                    nf[f"{fld}_label"] = None
+                nf["_enrichment"] = {"status": "degraded", "reason": "kodefikasi client not configured", "catalog": catalog_code, "component": plan_component}
+                enriched.append(nf)
+            return FeatureQueryResponse(type="vector", count=len(enriched), features=enriched)
+
+        mapping = await self.kodefikasi_client.resolve(catalog_code, plan_component, list(codes_set))
+        # mapping is {} when lahan_api returned not_found (ok) or when degraded (timeout/500).
+        # For phase 1, treat missing codes as unknown_code; degraded only when client is None
+        # or resolve explicitly returned None. The client currently returns {} for both,
+        # so we treat empty-missing as unknown_code to avoid false degraded badges.
+        enriched: list[dict] = []
+        for feat in response.features:
+            nf = dict(feat)
+            per_feat_resolved = 0
+            for fld in fields:
+                raw = feat.get(fld)
+                if raw is None or not str(raw).strip():
+                    continue
+                code = str(raw).strip()
+                item = mapping.get(code) if mapping else None
+                if item:
+                    nf[f"{fld}_label"] = item.get("name")
+                    if item.get("description"):
+                        nf[f"{fld}_description"] = item.get("description")
+                    if item.get("area_code"):
+                        nf[f"{fld}_area_code"] = item.get("area_code")
+                    per_feat_resolved += 1
+                else:
+                    nf[f"{fld}_label"] = None
+            if per_feat_resolved > 0:
+                nf["_enrichment"] = {"status": "ok", "catalog": catalog_code, "component": plan_component}
+            elif any(f in feat for f in fields):
+                nf["_enrichment"] = {"status": "unknown_code", "catalog": catalog_code, "component": plan_component}
+            enriched.append(nf)
+        return FeatureQueryResponse(type="vector", count=len(enriched), features=enriched)
+
     @staticmethod
     def _apply_field_configs(layer: Layer, response: FeatureQueryResponse) -> FeatureQueryResponse:
         """Filter response fields sesuai file_metadata.fields (visible only).
@@ -177,7 +258,7 @@ class QueryLayerFeaturesUseCase:
 
         if response.type == 'vector' and response.features:
             filtered = [
-                {k: v for k, v in feat.items() if k in visible or k == '_layer'}
+                {k: v for k, v in feat.items() if k in visible or k == '_layer' or k.endswith('_label') or k.endswith('_description') or k.endswith('_area_code') or k == '_enrichment'}
                 for feat in response.features
             ]
             return FeatureQueryResponse(type='vector', count=len(filtered), features=filtered)

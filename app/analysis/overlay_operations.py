@@ -11,16 +11,15 @@ def _get_geometry_type(gdf: gpd.GeoDataFrame) -> str:
     """Detect dominant geometry type in a GeoDataFrame."""
     if gdf.empty:
         return "polygon"
-    geom_types = gdf.geometry.geom_type.unique()
-    if len(geom_types) == 1:
-        gt = geom_types[0].lower()
-        if "polygon" in gt:
-            return "polygon"
-        if "line" in gt or "linestring" in gt:
-            return "line"
-        if "point" in gt:
-            return "point"
-    return geom_types[0].lower()
+    geom_types = [t.lower() for t in gdf.geometry.geom_type.unique() if t]
+    # Normalize Multi* types and mixed collections to base types
+    if any("polygon" in t for t in geom_types):
+        return "polygon"
+    if any("line" in t or "linestring" in t for t in geom_types):
+        return "line"
+    if any("point" in t for t in geom_types):
+        return "point"
+    return geom_types[0].lower() if geom_types else "polygon"
 
 
 def intersection(gdf_a: gpd.GeoDataFrame, gdf_b: gpd.GeoDataFrame,

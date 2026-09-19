@@ -142,12 +142,20 @@ class OverlayAnalysisUseCase:
         sources = []
         for layer in self.layer_repo.list_all():
             if layer.layer_type in ("geojson", "vector", "shp"):
+                raw_fields = list(layer.file_metadata.get("fields", [])) if layer.file_metadata else []
+                # file_metadata.fields may be list of strings or list of {original,label,visible}
+                fields = []
+                for f in raw_fields:
+                    if isinstance(f, dict) and "original" in f:
+                        fields.append(f["original"])
+                    elif isinstance(f, str):
+                        fields.append(f)
                 sources.append({
                     "layer_id": layer.id,
                     "filename": layer.filename,
                     "layer_type": layer.layer_type,
                     "geometry_type": "polygon",  # resolved on validate
-                    "fields": list(layer.file_metadata.get("fields", [])) if layer.file_metadata else [],
+                    "fields": fields,
                 })
         return sources
 
@@ -541,7 +549,15 @@ class OverlayAnalysisUseCase:
 
         final_path = upload.final_path
         if final_path.startswith("artifact://"):
-            return None
+            # Materialize artifact-backed sources (Upload API) — mirrors analysis_reference_source.load_reference
+            try:
+                from app.infrastructure.services.upload_artifact_client import UploadArtifactClient
+                artifact_id = final_path.removeprefix("artifact://")
+                with UploadArtifactClient().materialize(artifact_id, upload.filename) as path:
+                    return gpd.read_file(path)
+            except Exception as exc:
+                logger.warning("Failed to materialize artifact %s for layer %s: %s", final_path, layer_id, exc)
+                return None
 
         if os.path.exists(final_path):
             return gpd.read_file(final_path)
@@ -655,7 +671,8 @@ class OverlayAnalysisUseCase:
         # Save result via export_service
         result_file = self.export_service.save_geojson(result_gdf, result_id)
 
-        bounds = list(result_gdf.total_bounds) if not result_gdf.empty else [0, 0, 0, 0]
+        raw_bounds = list(result_gdf.total_bounds) if not result_gdf.empty else [0, 0, 0, 0]
+        bounds = [float(v) for v in raw_bounds]
 
         return {
             "result_id": result_id,
@@ -711,6 +728,7 @@ class OverlayAnalysisUseCase:
         except Exception:
             self.export_service.delete_result(result_file)
             raise
+        raw_b = list(result_gdf.total_bounds) if not result_gdf.empty else [0, 0, 0, 0]
         return {
             "result_id": result_id,
             "operation": "intersection",
@@ -721,7 +739,7 @@ class OverlayAnalysisUseCase:
             "feature_count": len(result_gdf),
             "skipped_null_geometry": 0,
             "warning": "Analysis produced no positive-area intersections" if result_gdf.empty else None,
-            "bounds": list(result_gdf.total_bounds) if not result_gdf.empty else [0, 0, 0, 0],
+            "bounds": [float(v) for v in raw_b],
             "area_metadata": {
                 "calculate_area": True,
                 "measurement_crs": AREA_CRS,

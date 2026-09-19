@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 import uuid
 from defusedxml.ElementTree import fromstring as safe_fromstring, ParseError as SafeParseError
 
-from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse, LayerLegendResponse, SyncBBoxRequest, ForwardGeocodeResponse, ReverseGeocodeResponse
+from app.domain.schemas import LayerResponse, FeatureQueryResponse, ExternalLayerRequest, PatchLayerRequest, LayerFieldsResponse, FieldUniqueValuesResponse, BboxFeaturesResponse, EsriDownloadRequest, LayerStyleRequest, LayerStyleResponse, LayerLegendResponse, SyncBBoxRequest, ForwardGeocodeResponse, ReverseGeocodeResponse, KodefikasiRequest
 from app.domain.models import Layer, JobStatus
 from app.infrastructure.db.connection import db, get_async_session
 from app.infrastructure.db.repository import LayerRepository, ProjectRepository, UploadSessionRepository, FeatureRepository
@@ -1014,11 +1014,112 @@ async def query_features(
     layer_repo: LayerRepository = Depends(_get_layer_repo),
     session_repo: UploadSessionRepository = Depends(_get_session_repo),
 ):
-    usecase = QueryLayerFeaturesUseCase(layer_repo, session_repo, artifact_client=UploadArtifactClient())
+    from app.infrastructure.clients.lahat_kodefikasi_client import LahatKodefikasiClient
+    usecase = QueryLayerFeaturesUseCase(
+        layer_repo, session_repo, artifact_client=UploadArtifactClient(), kodefikasi_client=LahatKodefikasiClient()
+    )
     try:
         return await usecase.execute(layer_id, lon, lat, authorization=authorization)
     except LayerSourceUnavailableError as exc:
         raise HTTPException(status_code=424, detail=exc.message)
+
+
+@router.get("/{layer_id}/kodefikasi", response_model=dict)
+async def get_layer_kodefikasi(
+    layer_id: str,
+    repo: LayerRepository = Depends(_get_layer_repo),
+):
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+    cfg = (layer.file_metadata or {}).get("kodefikasi")
+    return {"layer_id": layer_id, "kodefikasi": cfg}
+
+
+@router.patch("/{layer_id}/kodefikasi", response_model=LayerResponse)
+async def patch_layer_kodefikasi(
+    layer_id: str,
+    req: KodefikasiRequest,
+    repo: LayerRepository = Depends(_get_layer_repo),
+    session_repo: UploadSessionRepository = Depends(_get_session_repo),
+):
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+    # validate fields: at least one of code_field or enrich_fields
+    if not req.code_field and not req.enrich_fields:
+        raise HTTPException(status_code=422, detail="Either code_field or enrich_fields must be provided")
+    kodefikasi = {
+        "code_field": req.code_field,
+        "catalog_code": req.catalog_code,
+        "plan_component": req.plan_component,
+        "enrich_fields": req.enrich_fields or [],
+    }
+    # remove null code_field for cleanliness
+    if not kodefikasi["code_field"]:
+        kodefikasi.pop("code_field", None)
+    # merge into file_metadata
+    existing_meta = dict(layer.file_metadata or {})
+    existing_meta["kodefikasi"] = kodefikasi
+    updated = await repo.update(layer_id, file_metadata=existing_meta)
+    if not updated:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+    status = "done"
+    if updated.upload_session_id:
+        sess = await session_repo.get_by_id(updated.upload_session_id)
+        if sess:
+            status = sess.status
+    return LayerResponse(
+        id=updated.id,
+        upload_session_id=updated.upload_session_id,
+        code=updated.code,
+        layer_type=updated.layer_type,
+        filename=updated.filename,
+        file_type=updated.file_type,
+        tile_url_template=updated.tile_url_template,
+        status=status,
+        created_at=updated.created_at,
+        bbox=[updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north] if all(v is not None for v in [updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north]) else None,
+        file_metadata=updated.file_metadata,
+        abstract=updated.abstract,
+        topic_category=updated.topic_category,
+        language=updated.language,
+    )
+
+
+@router.delete("/{layer_id}/kodefikasi", response_model=LayerResponse)
+async def delete_layer_kodefikasi(
+    layer_id: str,
+    repo: LayerRepository = Depends(_get_layer_repo),
+    session_repo: UploadSessionRepository = Depends(_get_session_repo),
+):
+    layer = await repo.get_by_id(layer_id)
+    if not layer:
+        raise HTTPException(status_code=404, detail=f"Layer '{layer_id}' not found.")
+    meta = dict(layer.file_metadata or {})
+    meta.pop("kodefikasi", None)
+    updated = await repo.update(layer_id, file_metadata=meta)
+    status = "done"
+    if updated.upload_session_id:
+        sess = await session_repo.get_by_id(updated.upload_session_id)
+        if sess:
+            status = sess.status
+    return LayerResponse(
+        id=updated.id,
+        upload_session_id=updated.upload_session_id,
+        code=updated.code,
+        layer_type=updated.layer_type,
+        filename=updated.filename,
+        file_type=updated.file_type,
+        tile_url_template=updated.tile_url_template,
+        status=status,
+        created_at=updated.created_at,
+        bbox=[updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north] if all(v is not None for v in [updated.bbox_west, updated.bbox_south, updated.bbox_east, updated.bbox_north]) else None,
+        file_metadata=updated.file_metadata,
+        abstract=updated.abstract,
+        topic_category=updated.topic_category,
+        language=updated.language,
+    )
 
 
 @router.get("/{layer_id}/geocoding", response_model=None)

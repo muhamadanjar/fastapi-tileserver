@@ -369,6 +369,52 @@ class FileBackedMapRenderer:
                     metadata={"geoserver": result},
                     url=result.get("wms_url", ""),
                 )
+            if batch.output_format == "postgis":
+                from app.infrastructure.db.connection import db
+                from app.infrastructure.services.shapefile_import_service import import_shapefile_to_postgis
+
+                # Build a single-dataset ZIP for the PostGIS importer which
+                # expects an archive. The importer handles CRS, GIST index and
+                # atomic staging rename.
+                progress(30)
+                tmp_zip = work_dir.with_suffix(".zip")
+                try:
+                    with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for fp in work_dir.rglob("*"):
+                            if fp.is_file():
+                                zf.write(fp, fp.name)
+
+                    def _import_progress(processed: int, total: int) -> None:
+                        if total:
+                            progress(30 + int(processed / total * 65))
+
+                    archive_result = import_shapefile_to_postgis(
+                        zip_path=tmp_zip,
+                        engine=db.get_engine(),
+                        upload_id=item.layer_id,
+                        layer_id=item.layer_id,
+                        max_uncompressed_bytes=settings.SHP_IMPORT_MAX_UNCOMPRESSED_BYTES,
+                        max_features=settings.SHP_IMPORT_MAX_FEATURES,
+                        max_compression_ratio=settings.SHP_IMPORT_MAX_COMPRESSION_RATIO,
+                        batch_size=settings.SHP_IMPORT_BATCH_SIZE,
+                        progress_callback=_import_progress,
+                    )
+                    progress(96)
+                    # Archive contains exactly one dataset (the current item)
+                    ds_result = archive_result.datasets[0] if archive_result.datasets else None
+                    bbox = list(ds_result.bbox) if ds_result and ds_result.bbox else item.bbox
+                    return LayerData(
+                        id=item.layer_id, code=item.code or item.id, name=item.name,
+                        output_format="postgis",
+                        upload_id=batch.upload_id,
+                        bbox=bbox or [0, 0, 0, 0],
+                        style=style,
+                        metadata={"postgis": archive_result.metadata()},
+                        url="",
+                    )
+                finally:
+                    if tmp_zip.exists():
+                        tmp_zip.unlink(missing_ok=True)
             else:
                 # raster/mvt: delegate to tiling service
                 from app.infrastructure.services.tiling_service import TilingService
@@ -409,9 +455,10 @@ class FileBackedMapRenderer:
         if group.output_format == "mvt":
             self._publish_mvt_group(group, layers)
             return
-        if group.output_format == "raster":
+        if group.output_format in ("raster", "postgis"):
             # Raster tiles are composed on demand by the public group-tile
-            # endpoint. No duplicate tile pyramid is written here.
+            # endpoint. PostGIS layers are queried directly; no duplicate
+            # representation is written for the group.
             return
         if group.output_format != "wms":
             return
@@ -595,6 +642,8 @@ class FileBackedMapRenderer:
         if group.output_format == "mvt":
             group_dir = _group_styles_dir() / group.code
             shutil.rmtree(group_dir, ignore_errors=True)
+            return
+        if group.output_format in ("raster", "postgis"):
             return
         if group.output_format != "wms":
             return

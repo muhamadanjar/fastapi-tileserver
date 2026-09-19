@@ -125,6 +125,18 @@ class Settings(BaseSettings):
     NOMINATIM_TIMEOUT: int = Field(default=10, env="NOMINATIM_TIMEOUT")
     NOMINATIM_USER_AGENT: str = Field(default="tileserver-api", env="NOMINATIM_USER_AGENT")
 
+    # Lahat API kodefikasi enrichment (Pola Ruang ORDE/KODKWS/JNSRPR)
+    LAHAT_API_BASE_URL: str = Field(default="http://localhost:8090", env="LAHAT_API_BASE_URL")
+    LAHAT_API_JWT: Optional[str] = Field(default=None, env="LAHAT_API_JWT")
+    LAHAT_API_OAUTH_TOKEN_URL: Optional[str] = Field(default=None, env="LAHAT_API_OAUTH_TOKEN_URL")
+    LAHAT_API_OAUTH_CLIENT_ID: Optional[str] = Field(default=None, env="LAHAT_API_OAUTH_CLIENT_ID")
+    LAHAT_API_OAUTH_CLIENT_SECRET: Optional[str] = Field(default=None, env="LAHAT_API_OAUTH_CLIENT_SECRET")
+    LAHAT_API_OAUTH_SCOPE: str = Field(default="", env="LAHAT_API_OAUTH_SCOPE")
+    LAHAT_API_OAUTH_AUDIENCE: str = Field(default="lahat-api", env="LAHAT_API_OAUTH_AUDIENCE")
+    LAHAT_ENRICHMENT_TTL_SECONDS: int = Field(default=60, gt=0, env="LAHAT_ENRICHMENT_TTL_SECONDS")
+    LAHAT_ENRICHMENT_TIMEOUT_SECONDS: float = Field(default=0.8, gt=0, env="LAHAT_ENRICHMENT_TIMEOUT_SECONDS")
+    LAHAT_ENRICHMENT_ENABLED: bool = Field(default=True, env="LAHAT_ENRICHMENT_ENABLED")
+
 
     # CORS
     CORS_ALLOWED_ORIGINS: str = Field(default="*", env="CORS_ALLOWED_ORIGINS")
